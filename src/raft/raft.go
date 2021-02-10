@@ -54,15 +54,21 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	currentTerm int
+	voteFor int
+	commitIndex int
+    lastApplied int
+	nextIndex []int
+	matchIndex []int
+	isLeader bool
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var term int
-	var isleader bool
+	var term int = rf.currentTerm
+	var isleader bool = rf.isLeader
 	// Your code here (2A).
 	return term, isleader
 }
@@ -111,6 +117,11 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term int
+	CandidateID int
+	LastLogIndex int
+	LastLogTerm int
+
 }
 
 //
@@ -119,6 +130,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term int
+	VoteGranted bool
 }
 
 //
@@ -126,6 +139,14 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	if rf.currentTerm > args.Term{
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false 
+	}else if (rf.voteFor == -1 || rf.voteFor == args.CandidateID) && (args.LastLogTerm >= rf.currentTerm) && (args.LastLogIndex >= rf.lastApplied){
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true	
+	}
+
 }
 
 //
@@ -226,6 +247,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	
+	
+
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
