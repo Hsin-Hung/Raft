@@ -41,6 +41,18 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+type LogEntry struct {
+
+
+
+}
+
+const (
+	Leader = iota
+	Candidate
+	Follower
+)
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -54,13 +66,15 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	log []interface{}
 	currentTerm int
 	voteFor int
 	commitIndex int
     lastApplied int
 	nextIndex []int
 	matchIndex []int
-	isLeader bool
+	role int
+
 }
 
 // return currentTerm and whether this server
@@ -68,7 +82,7 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 
 	var term int = rf.currentTerm
-	var isleader bool = rf.isLeader
+	var isleader bool = rf.role == Leader
 	// Your code here (2A).
 	return term, isleader
 }
@@ -109,6 +123,28 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+}
+
+type AppendEntries struct{
+
+
+	
+}
+
+func (rf *Raft) AppendEntryHandler(args *AppendEntries, reply *AppendEntries){
+
+
+
+
+
+
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntries, reply *AppendEntries) bool{
+
+	ok := rf.peers[server].Call("Raft.AppendEntryHandler", args, reply)
+	return ok
+
 }
 
 //
@@ -198,9 +234,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := rf.role == Leader
+
+	if !isLeader{
+		return index, term, isLeader
+	}
 
 	// Your code here (2B).
 
@@ -247,12 +288,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	
-	
+	rf.currentTerm = 0
+	rf.voteFor = -1
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 
+	go leaderElection()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	return rf
 }
+
+func leaderElection(){
+
+
+
+
+
+}
+
