@@ -43,12 +43,6 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
-type LogEntry struct {
-
-
-
-}
-
 const (
 	Leader = iota
 	Candidate
@@ -75,9 +69,10 @@ type Raft struct {
     lastApplied int
 	nextIndex []int
 	matchIndex []int
-	role int
+	state int
 	timeOutDur int
 	resetTimeout chan int 
+	electionTimeout *time.Timer 
 
 }
 
@@ -86,7 +81,7 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 
 	var term int = rf.currentTerm
-	var isleader bool = rf.role == Leader
+	var isleader bool = rf.state == Leader
 	// Your code here (2A).
 	return term, isleader
 }
@@ -129,21 +124,40 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-type AppendEntries struct{
+type LogEntry struct {
 
 
+
+}
+
+type AppendEntriesArgs struct{
+	Term int
+	LeaderID int
+	PrevLogIndex int
+	PrevLogTerm int
+	Entries []LogEntry
+	LeaderCommit int
 	
 }
 
-func (rf *Raft) AppendEntryHandler(args *AppendEntries, reply *AppendEntries){
+type AppendEntriesReply struct{
+	term int
+	success bool
+}
 
-	rf.resetTimeout <- 1
+func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntriesReply){
 
+	if args.Term < rf.currentTerm{
+		reply.success = false
+	}
+
+	rf.electionTimeout.Reset(time.Duration(rf.timeOutDur))
+	rf.state = Follower
 
 
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntries, reply *AppendEntries) bool{
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool{
 
 	ok := rf.peers[server].Call("Raft.AppendEntryHandler", args, reply)
 	return ok
@@ -182,6 +196,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false 
 	}else if (rf.voteFor == -1 || rf.voteFor == args.CandidateID) && (args.LastLogTerm >= rf.currentTerm) && (args.LastLogIndex >= rf.lastApplied){
+		rf.voteFor = args.CandidateID
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true	
 	}
@@ -238,14 +253,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
-	index := -1
-	term := -1
-	isLeader := rf.role == Leader
-
-	if !isLeader{
-		return index, term, isLeader
-	}
-
+	index := rf.lastApplied
+	term := rf.currentTerm
+	isLeader := rf.state == Leader
 	// Your code here (2B).
 
 	return index, term, isLeader
@@ -295,9 +305,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.state = Follower
 	rf.timeOutDur = rand.Intn(150)+300;
+	rf.electionTimeout = time.NewTimer(time.Duration(rf.timeOutDur))
 
-	go rf.leaderElection()
+	//go rf.serverRules()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -305,26 +317,113 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-func (rf *Raft) leaderElection(){
-
-	select {
-
-	case <- rf.resetTimeout:
-		print("reset timeout")
+func (rf *Raft) serverRules(){
 
 
-	case <- time.After(time.Duration(rf.timeOutDur)):
-		
-		print("timeout, become candidate")
-		rf.role = Candidate
-		
-		for i:=0;i<len(rf.peers);i++{
-			
-			rf.setUpSendRequestVote(i)
+	for {
+		if rf.commitIndex > rf.lastApplied {
+			rf.lastApplied++
+
 
 		}
 
+		switch rf.state{
+
+			case Leader:
+				rf.sendHeartBeats()
+
+			case Candidate:
+				rf.startCandidateElection()
+
+			case Follower:
+				rf.startFollower()
+
+
+		}
+
+		time.Sleep(time.Millisecond * 100)
+
 	}
+
+
+
+}
+
+func (rf *Raft) sendHeartBeats(){
+
+	for i:=0;i<len(rf.peers);i++ {
+
+		if i!=rf.me{
+			rf.sendAppendEntries(i, &AppendEntriesArgs{}, &AppendEntriesReply{})
+		}
+
+	}
+
+}
+
+func (rf *Raft) startCandidateElection(){
+
+	rf.currentTerm++
+	totalVotes := 1
+	majority := len(rf.peers)/2+1
+	
+	select{
+
+		case <- rf.electionTimeout.C:
+			println("times up for candidate election")
+			return	
+
+		default:
+
+
+		for i:=0;i<len(rf.peers);i++{
+			args := RequestVoteArgs{}
+			args.CandidateID = rf.me
+			args.Term = rf.currentTerm
+			args.LastLogIndex = rf.lastApplied
+			args.LastLogTerm = rf.currentTerm
+	
+			reply := RequestVoteReply{}
+			rf.sendRequestVote(i,&args, &reply)
+
+			if rf.state == Leader{
+				rf.electionTimeout.Stop()
+				return
+			}
+
+			if reply.VoteGranted{
+				totalVotes++
+				if totalVotes>=majority{
+					rf.state = Leader
+					rf.electionTimeout.Stop()
+					return
+				}
+			}
+	
+		}
+
+
+	}
+
+
+}
+
+func (rf *Raft) startFollower(){
+
+	select {
+
+	case <-rf.electionTimeout.C:
+	
+
+	
+
+
+
+
+
+
+	}
+
 
 
 }
