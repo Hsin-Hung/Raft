@@ -17,11 +17,14 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "sync/atomic"
-import "../labrpc"
-import "time"
-import "math/rand"
+import (
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"../labrpc"
+)
 
 // import "bytes"
 // import "../labgob"
@@ -62,17 +65,20 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	log []interface{}
-	currentTerm int
-	voteFor int
-	commitIndex int
-    lastApplied int
-	nextIndex []int
-	matchIndex []int
-	state int
-	timeOutDur int
-	electionTimeout *time.Timer 
+	log             []LogEntry
+	currentTerm     int
+	voteFor         int
 
+	commitIndex     int
+	lastApplied     int
+
+	nextIndex       []int
+	matchIndex      []int
+
+	state           int
+	
+	timeOutDur      int
+	electionTimeout *time.Timer
 }
 
 // return currentTerm and whether this server
@@ -126,43 +132,52 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 type LogEntry struct {
-
-
-
+	Term    int
+	Command string
 }
 
-type AppendEntriesArgs struct{
-	Term int
-	LeaderID int
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderID     int
 	PrevLogIndex int
-	PrevLogTerm int
-	Entries []LogEntry
+	PrevLogTerm  int
+	Entries      []LogEntry
 	LeaderCommit int
-	
 }
 
-type AppendEntriesReply struct{
-	Term int
+type AppendEntriesReply struct {
+	Term    int
 	Success bool
 }
 
-func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntriesReply){
+func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
-	// if args.Term < rf.currentTerm{
-	// 	reply.success = false
-	// }
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	rf.resetTimeout()
-	rf.state = Follower
-	reply.Term = rf.currentTerm
 	reply.Success = true
+	reply.Term = rf.currentTerm
 
+	if rf.state == Candidate{
+		rf.state = Follower
+	}
+
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+	} else if args.Term > rf.currentTerm{
+		rf.state = Follower
+		rf.currentTerm = args.Term
+	}
+
+	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+	}
+
+	rf.resetTimeout()
 
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool{
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 
 	ok := rf.peers[server].Call("Raft.AppendEntryHandler", args, reply)
 	return ok
@@ -175,11 +190,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term int
-	CandidateID int
+	Term         int
+	CandidateID  int
 	LastLogIndex int
-	LastLogTerm int
-
+	LastLogTerm  int
 }
 
 //
@@ -188,7 +202,7 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term int
+	Term        int
 	VoteGranted bool
 }
 
@@ -200,17 +214,23 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.currentTerm > args.Term{
+	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
-		reply.VoteGranted = false 
-	}else if (rf.voteFor == -1 || rf.voteFor == args.CandidateID) && (args.LastLogTerm >= rf.currentTerm) && (args.LastLogIndex >= rf.lastApplied){
+		reply.VoteGranted = false
+		return
+	} else if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.state = Follower
+	}
+
+	if (rf.voteFor == -1 || rf.voteFor == args.CandidateID) && (args.LastLogTerm >= rf.currentTerm) && (args.LastLogIndex >= rf.lastApplied) {
 		rf.resetTimeout()
 		rf.voteFor = args.CandidateID
 		reply.Term = rf.currentTerm
-		reply.VoteGranted = true	
-	}else{
+		reply.VoteGranted = true
+	} else {
 		reply.Term = rf.currentTerm
-		reply.VoteGranted = false 
+		reply.VoteGranted = false
 	}
 
 }
@@ -318,7 +338,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.state = Follower
-	rf.timeOutDur = rand.Intn(150)+300;
+	rf.timeOutDur = rand.Intn(150) + 300
 	rf.electionTimeout = time.NewTimer(time.Duration(rf.timeOutDur))
 
 	go rf.serverRules()
@@ -328,8 +348,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-func (rf *Raft) serverRules(){
-
+func (rf *Raft) serverRules() {
 
 	for {
 		if rf.commitIndex > rf.lastApplied {
@@ -338,17 +357,16 @@ func (rf *Raft) serverRules(){
 		rf.mu.Lock()
 		state := rf.state
 		rf.mu.Unlock()
-		switch state{
+		switch state {
 
-			case Leader:
-				rf.sendHeartBeats()
+		case Leader:
+			rf.sendHeartBeats()
 
-			case Candidate:
-				rf.startCandidateElection()
+		case Candidate:
+			rf.startCandidateElection()
 
-			case Follower:
-				rf.startFollower()
-
+		case Follower:
+			rf.startFollower()
 
 		}
 
@@ -356,91 +374,150 @@ func (rf *Raft) serverRules(){
 
 	}
 
-
-
 }
 
-func (rf *Raft) sendHeartBeats(){
+func (rf *Raft) sendHeartBeats() {
 
-	for i:=0;i<len(rf.peers);i++ {
+	for i := 0; i < len(rf.peers); i++ {
 
-		if i!=rf.me{
-			rf.sendAppendEntries(i, &AppendEntriesArgs{}, &AppendEntriesReply{})
-		}
-
-	}
-
-}
-
-func (rf *Raft) startCandidateElection(){
-	rf.mu.Lock()
-	rf.currentTerm++
-	rf.mu.Unlock()
-	totalVotes := 1
-	majority := len(rf.peers)/2+1
-	
-	select{
-
-		case <- rf.electionTimeout.C:
-			println("times up for candidate election")
-			return	
-
-		default:
-
-
-		for i:=0;i<len(rf.peers);i++{
-			args := RequestVoteArgs{}
-			args.CandidateID = rf.me
-			args.Term = rf.currentTerm
-			args.LastLogIndex = rf.lastApplied
-			args.LastLogTerm = rf.currentTerm
-	
-			reply := RequestVoteReply{}
-			rf.sendRequestVote(i,&args, &reply)
-
-			rf.mu.Lock()
-			if rf.state == Leader{
-				rf.electionTimeout.Stop()
+		if i != rf.me {
+			args := AppendEntriesArgs{}
+			reply := AppendEntriesReply{}
+			rf.sendAppendEntries(i, &args, &reply)
+			if reply.Term > rf.currentTerm{
+				rf.mu.Lock()
+				rf.currentTerm = reply.Term
+				rf.state = Follower
 				rf.mu.Unlock()
 				return
 			}
-			rf.mu.Unlock()
-
-			if reply.VoteGranted{
-				rf.mu.Lock()
-				totalVotes++
-				if totalVotes>=majority{
-					rf.state = Leader
-					rf.electionTimeout.Stop()
-					rf.mu.Unlock()
-					return
-				}
-				rf.mu.Unlock()
-			}
-	
+			// if !reply.Success {
+			// 	rf.mu.Lock()
+			// 	rf.state = Follower
+			// 	rf.mu.Unlock()
+			// 	return
+			// }
 		}
-
 
 	}
 
+}
+
+func (rf *Raft) startCandidateElection() {
+	rf.mu.Lock()
+	rf.currentTerm++
+	totalVotes := 1
+	processedVotes := 1
+	rf.voteFor = rf.me 
+	majority := len(rf.peers)/2 + 1
+	rf.resetTimeout()
+	rf.mu.Unlock()
+
+	
+	for i := range rf.peers{
+
+		if i != rf.me{
+
+			go func(server int){
+
+				getVote := rf.setUpSendRequestVote(server)
+
+				processedVotes++
+
+				if getVote{
+					totalVotes++
+				}
+
+
+
+			}(i)
+
+
+		}
+
+	}
+
+	for processedVotes<len(rf.peers) && totalVotes<majority && rf.state == Candidate{
+
+		time.Sleep(200 * time.Millisecond)
+
+	}
+
+	if rf.state == Follower{
+		return
+	}
+
+	if totalVotes>=majority{
+		rf.state = Leader
+	}
+
+
+
+	// select {
+
+	// case <-rf.electionTimeout.C:
+	// 	println("times up for candidate election")
+	// 	return
+
+	// default:
+
+	// 	for i := 0; i < len(rf.peers); i++ {
+
+	// 		args := RequestVoteArgs{}
+	// 		args.CandidateID = rf.me
+	// 		args.Term = rf.currentTerm
+	// 		args.LastLogIndex = rf.lastApplied
+	// 		args.LastLogTerm = rf.currentTerm
+
+	// 		reply := RequestVoteReply{}
+
+	// 		go func(si int){
+	// 			rf.sendRequestVote(si, &args, &reply)
+
+	// 			if reply.Term > rf.currentTerm{
+	// 				rf.currentTerm = reply.Term
+	// 				rf.state = Follower
+	// 			}
+	
+	// 			if rf.state == Leader || rf.state == Follower{
+	// 				return
+	// 			}
+	
+	// 			if reply.VoteGranted {
+	// 				rf.mu.Lock()
+	// 				totalVotes++
+	// 				if totalVotes >= majority {
+	// 					rf.state = Leader
+	// 					rf.electionTimeout.Stop()
+	// 					rf.mu.Unlock()
+	// 					return
+	// 				}
+	// 				rf.mu.Unlock()
+	// 			}
+
+	// 		}(i)
+
+
+	// 	}
+
+	// }
 
 }
 
-func (rf *Raft) startFollower(){
+func (rf *Raft) startFollower() {
 
 	rf.resetTimeout()
 
 	<-rf.electionTimeout.C
-	
+
 	rf.mu.Lock()
 	rf.state = Candidate
 	rf.mu.Unlock()
-	rf.electionTimeout.Stop() 
-
+	rf.electionTimeout.Stop()
 
 }
 
-func (rf *Raft) setUpSendRequestVote(server int){
+func (rf *Raft) setUpSendRequestVote(server int) bool {
 
 	args := RequestVoteArgs{}
 	reply := RequestVoteReply{}
@@ -449,15 +526,20 @@ func (rf *Raft) setUpSendRequestVote(server int){
 	args.LastLogIndex = rf.lastApplied
 	args.LastLogTerm = rf.currentTerm
 	args.Term = rf.currentTerm
-	
-	rf.sendRequestVote(server, &args, &reply)
+
+	ok := rf.sendRequestVote(server, &args, &reply)
+
+	if ok{
+		return reply.VoteGranted
+	}
+	return false
+
+
 
 }
 
-func (rf *Raft) resetTimeout(){
+func (rf *Raft) resetTimeout() {
 
 	rf.electionTimeout.Reset(time.Duration(rf.timeOutDur))
 
 }
-
-
