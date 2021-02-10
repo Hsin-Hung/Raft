@@ -20,6 +20,8 @@ package raft
 import "sync"
 import "sync/atomic"
 import "../labrpc"
+import "time"
+import "math/rand"
 
 // import "bytes"
 // import "../labgob"
@@ -74,6 +76,8 @@ type Raft struct {
 	nextIndex []int
 	matchIndex []int
 	role int
+	timeOutDur int
+	resetTimeout chan int 
 
 }
 
@@ -133,8 +137,7 @@ type AppendEntries struct{
 
 func (rf *Raft) AppendEntryHandler(args *AppendEntries, reply *AppendEntries){
 
-
-
+	rf.resetTimeout <- 1
 
 
 
@@ -292,8 +295,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.timeOutDur = rand.Intn(150)+300;
 
-	go leaderElection()
+	go rf.leaderElection()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -301,11 +305,42 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-func leaderElection(){
+func (rf *Raft) leaderElection(){
+
+	select {
+
+	case <- rf.resetTimeout:
+		print("reset timeout")
 
 
+	case <- time.After(time.Duration(rf.timeOutDur)):
+		
+		print("timeout, become candidate")
+		rf.role = Candidate
+		
+		for i:=0;i<len(rf.peers);i++{
+			
+			rf.setUpSendRequestVote(i)
 
+		}
+
+	}
 
 
 }
+
+func (rf *Raft) setUpSendRequestVote(server int){
+
+	args := RequestVoteArgs{}
+	reply := RequestVoteReply{}
+
+	args.CandidateID = rf.me
+	args.LastLogIndex = rf.lastApplied
+	args.LastLogTerm = rf.currentTerm
+	args.Term = rf.currentTerm
+	
+	rf.sendRequestVote(server, &args, &reply)
+
+}
+
 
