@@ -360,7 +360,7 @@ func (rf *Raft) serverRules() {
 		switch state {
 
 		case Leader:
-			rf.sendHeartBeats()
+			rf.startLeaderHeartBeats()
 
 		case Candidate:
 			rf.startCandidateElection()
@@ -376,31 +376,44 @@ func (rf *Raft) serverRules() {
 
 }
 
-func (rf *Raft) sendHeartBeats() {
+func (rf *Raft) startLeaderHeartBeats() {
 
-	for i := 0; i < len(rf.peers); i++ {
 
-		if i != rf.me {
-			args := AppendEntriesArgs{}
-			reply := AppendEntriesReply{}
-			rf.sendAppendEntries(i, &args, &reply)
-			if reply.Term > rf.currentTerm{
-				rf.mu.Lock()
-				rf.currentTerm = reply.Term
-				rf.state = Follower
-				rf.mu.Unlock()
+	for i := range rf.peers{
+
+		go func(server int){
+
+			success := rf.sendHeartBeat(server)
+
+			if rf.state != Leader{
 				return
 			}
-			// if !reply.Success {
-			// 	rf.mu.Lock()
-			// 	rf.state = Follower
-			// 	rf.mu.Unlock()
-			// 	return
-			// }
-		}
+
+			if !success{
+				rf.state = Follower
+				return 
+			}
+		}(i)
 
 	}
 
+}
+
+func (rf *Raft) sendHeartBeat(server int) bool{
+
+	args := AppendEntriesArgs{}
+	reply := AppendEntriesReply{}
+
+	ok := rf.sendAppendEntries(server, &args, &reply)
+
+	if ok{
+		if rf.currentTerm<reply.Term{
+			rf.currentTerm = reply.Term
+		}
+		return reply.Success
+	}
+
+	return false
 }
 
 func (rf *Raft) startCandidateElection() {
@@ -412,6 +425,13 @@ func (rf *Raft) startCandidateElection() {
 	majority := len(rf.peers)/2 + 1
 	rf.resetTimeout()
 	rf.mu.Unlock()
+
+	go func(){
+
+		
+
+
+	}()
 
 	
 	for i := range rf.peers{
@@ -428,8 +448,6 @@ func (rf *Raft) startCandidateElection() {
 					totalVotes++
 				}
 
-
-
 			}(i)
 
 
@@ -439,7 +457,7 @@ func (rf *Raft) startCandidateElection() {
 
 	for processedVotes<len(rf.peers) && totalVotes<majority && rf.state == Candidate{
 
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 	}
 
@@ -510,10 +528,12 @@ func (rf *Raft) startFollower() {
 
 	<-rf.electionTimeout.C
 
-	rf.mu.Lock()
-	rf.state = Candidate
-	rf.mu.Unlock()
-	rf.electionTimeout.Stop()
+	if rf.state == Follower{
+		rf.mu.Lock()
+		rf.state = Candidate
+		rf.mu.Unlock()
+	}
+
 
 }
 
@@ -530,6 +550,9 @@ func (rf *Raft) setUpSendRequestVote(server int) bool {
 	ok := rf.sendRequestVote(server, &args, &reply)
 
 	if ok{
+		if rf.currentTerm<reply.Term{
+			rf.currentTerm = reply.Term
+		}
 		return reply.VoteGranted
 	}
 	return false
