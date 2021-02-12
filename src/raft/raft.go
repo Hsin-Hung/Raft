@@ -18,7 +18,7 @@ package raft
 //
 
 import (
-	"log"
+	//"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -155,25 +155,33 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
-	log.Printf("server %d got heartbeat from server %d", rf.me, args.LeaderID)
-
-	if rf.state == Follower{
-		rf.appendReqCh <- 1
-	}
-
-
+	//log.Printf("server %d got heartbeat from server %d", rf.me, args.LeaderID)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	reply.Success = true
 	reply.Term = rf.currentTerm
+	if rf.state == Follower{
 
-	if args.Term < rf.currentTerm {
-		reply.Success = false
-	} else if args.Term > rf.currentTerm{
-		rf.state = Follower
-		rf.currentTerm = args.Term
-		reply.Success = true
+		if args.Term < rf.currentTerm{
+			reply.Success = false
+
+		}else{
+			rf.currentTerm = args.Term
+			rf.appendReqCh <- 1
+			reply.Success = true
+		}
+
+	}else if rf.state == Candidate{
+
+		if args.Term < rf.currentTerm{
+			reply.Success = false
+
+		}else{
+			rf.currentTerm = args.Term
+			rf.state = Follower
+			reply.Success = true
+		}
+
+
 	}
 
 }
@@ -211,7 +219,7 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	log.Printf("server %d recieves vote and is %d", rf.me, rf.state)
+	//log.Printf("server %d recieves vote and is %d", rf.me, rf.state)
 
 	if rf.state == Follower{
 		rf.appendReqCh <- 1
@@ -334,7 +342,7 @@ func (rf *Raft) killed() bool {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 
-	log.Printf("%d", me)
+	//log.Printf("%d", me)
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -349,7 +357,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.timeOutDur = rand.Intn(400) + 450
 	rf.appendReqCh = make(chan int)
 	rf.reqVoteCh = make(chan int)
-	log.Printf("server %d has timeout %d",rf.me, rf.timeOutDur)
+	//log.Printf("server %d has timeout %d",rf.me, rf.timeOutDur)
 	go rf.serverRules()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -489,7 +497,7 @@ for{
 		return
 	}
 	if totalVotes >= majority {
-		log.Printf("server %d becomes leader", rf.me)
+		//log.Printf("server %d becomes leader", rf.me)
 		rf.state = Leader
 	}
 
@@ -504,7 +512,7 @@ func (rf *Raft) startFollower() {
 		case <-time.After(time.Duration(rf.timeOutDur)*time.Millisecond):
 
 			rf.mu.Lock()
-			log.Printf("server %d becomes a candidate on term %d", rf.me, rf.currentTerm)
+			//log.Printf("server %d becomes a candidate on term %d", rf.me, rf.currentTerm)
 			rf.state = Candidate
 			rf.mu.Unlock()
 			return
