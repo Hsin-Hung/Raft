@@ -415,32 +415,25 @@ func (rf *Raft) serverRules() {
 func (rf *Raft) startLeaderHeartBeats() {
 
 
-for {
+for !rf.killed(){
 
 	for i := range rf.peers {
 
 		if i != rf.me {
 
-			go func(server int) {
-
-				success := rf.sendHeartBeat(server)
-
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
-				if rf.state != Leader {
-					return
-				}
-
-				if !success {
-					rf.state = Follower
-					return
-				}
-			}(i)
+			go rf.sendHeartBeat(i)
 
 		}
 
 	}
 
+	rf.mu.Lock()
+	if rf.state != Leader {
+		rf.mu.Unlock()
+		break 
+	}
+	rf.mu.Unlock()
+	
 	time.Sleep(time.Millisecond * 100)
 }
 
@@ -463,6 +456,7 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 		defer rf.mu.Unlock()
 		if rf.currentTerm < reply.Term {
 			rf.currentTerm = reply.Term
+			rf.state = Follower
 		}
 		return reply.Success
 	}
