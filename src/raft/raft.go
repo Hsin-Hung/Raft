@@ -479,7 +479,6 @@ func (rf *Raft) startCandidateElection() {
 		if i != rf.me {
 			go func(server int) {
 				getVote := rf.setUpSendRequestVote(server)
-				rf.reqVoteCh <- 1
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 				processedVotes++
@@ -490,28 +489,33 @@ func (rf *Raft) startCandidateElection() {
 		}
 	}
 
+timer := time.NewTimer(time.Duration(rf.timeOutDur)*time.Millisecond)
+
 outer:
 for{
+
 	select {
 
-	case <-time.After(time.Duration(rf.timeOutDur)*time.Millisecond):
+	case <-timer.C:
+		return
 
-	case <-rf.reqVoteCh:
+	default:
 		rf.mu.Lock()
 		if processedVotes == len(rf.peers) || totalVotes >= majority || rf.state != Candidate {
 			rf.mu.Unlock()
 			break outer
 		}
 		rf.mu.Unlock()
-		continue
 
 	}
 
 }
-
+rf.mu.Lock()
+defer rf.mu.Unlock()
 	if rf.state == Follower {
 		return
 	}
+
 	if totalVotes >= majority {
 		//log.Printf("server %d becomes leader", rf.me)
 		rf.state = Leader
@@ -559,6 +563,7 @@ func (rf *Raft) setUpSendRequestVote(server int) bool {
 		defer rf.mu.Unlock()
 		if rf.currentTerm < reply.Term {
 			rf.currentTerm = reply.Term
+			rf.state = Follower
 		}
 		return reply.VoteGranted
 	}
