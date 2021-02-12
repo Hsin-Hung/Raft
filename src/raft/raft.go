@@ -170,7 +170,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 			reply.Success = true
 		}
 
-	}else if rf.state == Candidate{
+	}else {
 
 		if args.Term < rf.currentTerm{
 			reply.Success = false
@@ -180,7 +180,6 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 			rf.state = Follower
 			reply.Success = true
 		}
-
 
 	}
 
@@ -221,31 +220,54 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	//log.Printf("server %d recieves vote and is %d", rf.me, rf.state)
 
-	if rf.state == Follower{
-		rf.appendReqCh <- 1
-	}
-
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	reply.Term = rf.currentTerm
 
-	if (rf.currentTerm > args.Term)|| (rf.state == Candidate) {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	} else if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.state = Follower
+	if rf.state == Follower{
+
+		if (rf.currentTerm > args.Term){
+			reply.VoteGranted = false
+
+		}else{
+
+			rf.currentTerm = args.Term
+
+			if rf.voteFor == -1 || rf.voteFor == args.CandidateID{
+				rf.voteFor = args.CandidateID
+				reply.VoteGranted = true
+				rf.appendReqCh <- 1
+
+			}else{
+				reply.VoteGranted = false
+			}
+
+
+		}
+
+	}else{
+
+		if (rf.currentTerm > args.Term){
+			reply.VoteGranted = false
+
+		}else{
+			rf.state = Follower
+			rf.currentTerm = args.Term
+
+			if rf.voteFor == -1 || rf.voteFor == args.CandidateID{
+				rf.voteFor = args.CandidateID
+				reply.VoteGranted = true
+
+			}else{
+				reply.VoteGranted = false
+			}
+
+
+		}
+
 	}
 
-	if (rf.voteFor == -1) || (rf.voteFor == rf.me) {
-		rf.voteFor = args.CandidateID
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = true
-	} else {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-	}
 
 }
 
