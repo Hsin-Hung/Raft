@@ -163,6 +163,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	//log.Printf("server %d append request to server %d on term %d", args.LeaderID, rf.me, args.Term)
 	reply.Success = true
 	reply.Term = rf.currentTerm
+
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
@@ -378,6 +379,7 @@ func (rf *Raft) serverRules() {
 		switch state {
 
 		case Leader:
+			rf.electionTimer.Stop()
 			rf.startLeaderHeartBeats()
 			time.Sleep(time.Millisecond * 100)
 			break
@@ -397,7 +399,12 @@ func (rf *Raft) serverRules() {
 func (rf *Raft) startLeaderHeartBeats() {
 
 	for i := range rf.peers {
-
+		rf.mu.Lock()
+		if rf.state != Leader{
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
 		if i != rf.me {
 			go rf.sendHeartBeat(i)
 		}
@@ -444,6 +451,7 @@ func (rf *Raft) startCandidateElection() {
 	processedVotes := 1
 	rf.voteFor = rf.me
 	majority := len(rf.peers)/2 + 1
+	voteCh := make(chan bool)
 	rf.mu.Unlock()
 
 	for i := range rf.peers {
@@ -451,32 +459,48 @@ func (rf *Raft) startCandidateElection() {
 			go func(server int) {
 				getVote := rf.setUpSendRequestVote(server)
 				rf.mu.Lock()
-				defer rf.mu.Unlock()
 				processedVotes++
 				if getVote {
 					totalVotes++
-					if rf.state == Candidate && totalVotes >= majority{
-						//log.Printf("CANDIDATE %d got majority votes becomes LEADER for term %d", rf.me, rf.currentTerm)
-						rf.state = Leader
-					}
 				}
+				rf.mu.Unlock()
+				voteCh <- true
 			
 			}(i)
 		}
 	}
 
-	time.Sleep(rf.getTimerDuration())
+time:=time.NewTimer(rf.getTimerDuration())
 
+for{
+
+	select{
+		case <- time.C:
+			return
+
+		case <- voteCh:
+			rf.mu.Lock()
+			if rf.state == Candidate && totalVotes >= majority{
+				rf.state = Leader
+				rf.mu.Unlock()
+				return
+			}
+			rf.mu.Unlock()
+	
+}
+
+}
 
 
 }
 
 func (rf *Raft) startFollower() {
-	rf.mu.Lock()
+
+		rf.mu.Lock()
 		//log.Printf("server %d becomes a FOLLOWER for term %d",rf.me, rf.currentTerm)
 		rf.mu.Unlock()
+		rf.resetElectionTimer()
 		<-rf.electionTimer.C
-		
 		rf.mu.Lock()
 		//log.Printf("FOLLOWER %d election times out for term %d",rf.me, rf.currentTerm)
 		rf.state = Candidate
