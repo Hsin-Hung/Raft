@@ -93,6 +93,8 @@ type Raft struct {
 	changeRoleCh chan int
 
 	electionTimer *time.Timer
+
+	lastTime time.Time 
 }
 
 // return currentTerm and whether this server
@@ -183,7 +185,8 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		rf.state = Follower
 		rf.voteFor = -1
 	}
-	rf.resetElectionTimer()
+	//rf.resetElectionTimer()
+	rf.lastTime = time.Now()
 
 }
 
@@ -262,7 +265,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.voteFor == -1 || rf.voteFor == args.CandidateID {
 		rf.voteFor = args.CandidateID
 		reply.VoteGranted = true
-		rf.resetElectionTimer()
+		// rf.resetElectionTimer()
+		rf.lastTime = time.Now()
 	}
 
 }
@@ -391,6 +395,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.reqVoteCh = make(chan int)
 	rf.changeRoleCh = make(chan int)
 	rf.electionTimer = time.NewTimer(rf.getTimerDuration())
+	rf.lastTime = time.Now()
 	//log.Printf("server %d has timeout %d", rf.me, rf.timeOutDur)
 
 	// initialize from state persisted before a crash
@@ -427,7 +432,7 @@ func (rf *Raft) serverRules() {
 		switch state {
 
 		case Leader:
-			rf.electionTimer.Stop()
+			//rf.electionTimer.Stop()
 			rf.startLeaderHeartBeats()
 			time.Sleep(time.Millisecond * 100)
 			break
@@ -499,9 +504,10 @@ func (rf *Raft) startCandidateElection() {
 	processedVotes := 1
 	rf.voteFor = rf.me
 	majority := len(rf.peers)/2 + 1
-	voteCh := make(chan bool)
+	electionStartTime := time.Now()
 	rf.mu.Unlock()
 
+	cond := sync.NewCond(&rf.mu)
 	for i := range rf.peers {
 		if i != rf.me {
 			go func(server int) {
@@ -511,48 +517,45 @@ func (rf *Raft) startCandidateElection() {
 				if getVote {
 					totalVotes++
 				}
+				cond.Broadcast()
 				rf.mu.Unlock()
-				voteCh <- true
-			
 			}(i)
 		}
 	}
 
-time:=time.NewTimer(rf.getTimerDuration())
+rf.mu.Lock()
+for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candidate && time.Now().Sub(electionStartTime)<rf.getTimerDuration(){
 
-for{
-
-	select{
-		case <- time.C:
-			return
-
-		case <- voteCh:
-			rf.mu.Lock()
-			if rf.state == Candidate && totalVotes >= majority{
-				rf.state = Leader
-				rf.mu.Unlock()
-				return
-			}
-			rf.mu.Unlock()
-	
+	cond.Wait()
 }
 
+if rf.state == Candidate && totalVotes >= majority{
+		rf.state = Leader
 }
+rf.mu.Unlock()
 
 
 }
 
 func (rf *Raft) startFollower() {
 
-		rf.mu.Lock()
-		//log.Printf("server %d becomes a FOLLOWER for term %d",rf.me, rf.currentTerm)
-		rf.mu.Unlock()
-		rf.resetElectionTimer()
-		<-rf.electionTimer.C
-		rf.mu.Lock()
-		//log.Printf("FOLLOWER %d election times out for term %d",rf.me, rf.currentTerm)
-		rf.state = Candidate
-		rf.mu.Unlock()
+	
+		for {
+			rf.mu.Lock()
+			timePassed := time.Now().Sub(rf.lastTime)
+			rf.mu.Unlock()
+			
+			if timePassed>=rf.getTimerDuration(){
+				rf.mu.Lock()
+				rf.state = Candidate
+				rf.mu.Unlock()
+				return
+			}
+
+			time.Sleep(50 * time.Millisecond)
+
+		}
+
 		
 
 }
