@@ -140,7 +140,6 @@ func (rf *Raft) readPersist(data []byte) {
 type LogEntry struct {
 	Term    int
 	Command interface{}
-	Index int
 }
 
 type AppendEntriesArgs struct {
@@ -178,11 +177,11 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		return
 	}
 
-	rf.log = append(rf.log, args.Entries...)
+	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
 
 	if args.LeaderCommit > rf.commitIndex{
 
-		lastEntryIndex := args.Entries[len(args.Entries)-1].Index
+		lastEntryIndex := len(args.Entries)-1
 
 		if args.LeaderCommit > lastEntryIndex{
 			rf.commitIndex = lastEntryIndex
@@ -271,8 +270,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convert2Follower()
 	}
 
+	lastLogEntry := rf.log[len(rf.log) - 1]
+	higherTermCheck := args.LastLogTerm > lastLogEntry.Term
+	higherIndexCheck := (args.LastLogTerm == lastLogEntry.Term) && (args.LastLogIndex >= len(rf.log)-1)
 
-	if (rf.voteFor == -1 || rf.voteFor == args.CandidateID){
+	if (rf.voteFor == -1 || rf.voteFor == args.CandidateID) && (higherTermCheck || higherIndexCheck){
 		rf.voteFor = args.CandidateID
 		reply.VoteGranted = true
 		rf.lastTimestamp = time.Now()
@@ -340,7 +342,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		newEntry := LogEntry{
 			Term: rf.currentTerm,
 			Command: command,
-			Index: len(rf.log),
 		}
 		index = len(rf.log)
 		rf.log = append(rf.log, newEntry)
@@ -352,32 +353,34 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) appendNewEntry(){
 
+	for i := range rf.peers{
 
+		if i!=rf.me{
 
+			go rf.sendNewEntries(i)
 
+		}
 
-
+	}
 
 }
 
 func (rf *Raft) sendNewEntries(server int) bool {
 
-
-	args := AppendEntriesArgs{}
-	reply := AppendEntriesReply{}	
-
-	newEntry := rf.log[len(rf.log)-1]
-
-	args.Entries = rf.log[len(rf.log)-1:]
-	args.Term = rf.currentTerm
-	args.LeaderID = rf.me
-	args.PrevLogIndex = newEntry.Index
-	args.PrevLogTerm = newEntry.Term
-	
-	args.LeaderCommit = rf.commitIndex
-
-
 	for !rf.killed() {
+
+		args := AppendEntriesArgs{}
+		reply := AppendEntriesReply{}	
+	
+		args.Term = rf.currentTerm
+		args.LeaderID = rf.me
+		args.LeaderCommit = rf.commitIndex
+		args.Entries = rf.log[rf.nextIndex[server]:]   
+	
+		//index out of bound check
+		prevEntry := rf.log[rf.nextIndex[server]-1]
+		args.PrevLogIndex = rf.nextIndex[server]-1
+		args.PrevLogTerm = prevEntry.Term
 	
 		ok := rf.sendAppendEntries(server, &args, &reply)
 	
@@ -386,10 +389,11 @@ func (rf *Raft) sendNewEntries(server int) bool {
 			if !reply.Success{
 	
 				rf.nextIndex[server]--;
-	
-	
+				continue 
 	
 			}else {
+				rf.nextIndex[server] = len(rf.log)-1
+				rf.matchIndex[server] = len(rf.log)-1
 				return true
 			}
 	
@@ -556,7 +560,7 @@ func (rf *Raft) leaderStateInit(){
 
 	for i := range rf.nextIndex{
 
-		rf.nextIndex[i] = rf.log[len(rf.log)-1].Index + 1
+		rf.nextIndex[i] = len(rf.log)
 		rf.matchIndex[i] = 0
 
 	}
