@@ -139,7 +139,8 @@ func (rf *Raft) readPersist(data []byte) {
 }
 type LogEntry struct {
 	Term    int
-	Command string
+	Command interface{}
+	Index int
 }
 
 type AppendEntriesArgs struct {
@@ -169,6 +170,26 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
+	}
+
+	if args.PrevLogIndex>=len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
+
+		reply.Success = false
+		return
+	}
+
+	rf.log = append(rf.log, args.Entries...)
+
+	if args.LeaderCommit > rf.commitIndex{
+
+		lastEntryIndex := args.Entries[len(args.Entries)-1].Index
+
+		if args.LeaderCommit > lastEntryIndex{
+			rf.commitIndex = lastEntryIndex
+		}else{
+			rf.commitIndex = args.LeaderCommit
+		}
+
 	}
 
 	if rf.currentTerm < args.Term {
@@ -250,7 +271,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convert2Follower()
 	}
 
-	if rf.voteFor == -1 || rf.voteFor == args.CandidateID {
+
+	if (rf.voteFor == -1 || rf.voteFor == args.CandidateID){
 		rf.voteFor = args.CandidateID
 		reply.VoteGranted = true
 		rf.lastTimestamp = time.Now()
@@ -313,9 +335,74 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
 	// Your code here (2B).
+	if isLeader{
 
+		newEntry := LogEntry{
+			Term: rf.currentTerm,
+			Command: command,
+			Index: len(rf.log),
+		}
+		index = len(rf.log)
+		rf.log = append(rf.log, newEntry)
+		go rf.appendNewEntry()
+	}
 
 	return index, term, isLeader
+}
+
+func (rf *Raft) appendNewEntry(){
+
+
+
+
+
+
+
+}
+
+func (rf *Raft) sendNewEntries(server int) bool {
+
+
+	args := AppendEntriesArgs{}
+	reply := AppendEntriesReply{}	
+
+	newEntry := rf.log[len(rf.log)-1]
+
+	args.Entries = rf.log[len(rf.log)-1:]
+	args.Term = rf.currentTerm
+	args.LeaderID = rf.me
+	args.PrevLogIndex = newEntry.Index
+	args.PrevLogTerm = newEntry.Term
+	
+	args.LeaderCommit = rf.commitIndex
+
+
+	for !rf.killed() {
+	
+		ok := rf.sendAppendEntries(server, &args, &reply)
+	
+		if ok{
+	
+			if !reply.Success{
+	
+				rf.nextIndex[server]--;
+	
+	
+	
+			}else {
+				return true
+			}
+	
+	
+		}
+
+
+	}
+
+
+	return false 
+
+
 }
 
 //
@@ -364,6 +451,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.state = Follower
+	rf.log = make([] LogEntry, 0)
+	rf.nextIndex = make([] int, len(peers))
+	rf.matchIndex = make([] int, len(peers))
 	rf.timeOutDur = rand.Intn(150) + 350
 	rf.lastTimestamp = time.Now()
 
@@ -462,6 +552,19 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 	return false
 }
 
+func (rf *Raft) leaderStateInit(){
+
+	for i := range rf.nextIndex{
+
+		rf.nextIndex[i] = rf.log[len(rf.log)-1].Index + 1
+		rf.matchIndex[i] = 0
+
+	}
+
+
+
+}
+
 // candidate will start an election 
 func (rf *Raft) startCandidateElection() {
 
@@ -501,7 +604,7 @@ for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candid
 
 // if candidate gets majority of votes, then beomces a leader 
 if rf.state == Candidate && totalVotes >= majority{
-		rf.state = Leader
+		rf.convert2Leader()
 }
 
 
@@ -562,5 +665,12 @@ func (rf *Raft) convert2Follower(){
 	rf.state = Follower
 	rf.voteFor = -1
 	rf.randomizeTimerDuration()
+
+}
+
+func (rf *Raft) convert2Leader(){
+
+	rf.state = Leader 
+	rf.leaderStateInit()
 
 }
