@@ -156,6 +156,9 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+//
+// RPC handler for append entry RPC
+//
 func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.mu.Lock()
@@ -372,18 +375,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
+// get the election time duration 
 func (rf *Raft) getTimerDuration() time.Duration {
 
 	return time.Duration(rf.timeOutDur) * time.Millisecond
 
 }
 
+// randomize the election time duration 
 func (rf *Raft) randomizeTimerDuration(){
 
 	rf.timeOutDur = rand.Intn(150) + 350
 
 }
 
+// start the main raft server task 
 func (rf *Raft) startMainRoutine() {
 
 	for !rf.killed() {
@@ -413,6 +419,7 @@ func (rf *Raft) startMainRoutine() {
 
 }
 
+// leader sends heart beats to all peers periodically 
 func (rf *Raft) startLeaderHeartBeats() {
 
 	for i := range rf.peers {
@@ -429,6 +436,7 @@ func (rf *Raft) startLeaderHeartBeats() {
 
 }
 
+// leader's helper function to send heart beats to peers
 func (rf *Raft) sendHeartBeat(server int) bool {
 
 	args := AppendEntriesArgs{}
@@ -454,6 +462,7 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 	return false
 }
 
+// candidate will start an election 
 func (rf *Raft) startCandidateElection() {
 
 	rf.mu.Lock()
@@ -490,6 +499,7 @@ for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candid
 	cond.Wait()
 }
 
+// if candidate gets majority of votes, then beomces a leader 
 if rf.state == Candidate && totalVotes >= majority{
 		rf.state = Leader
 }
@@ -497,28 +507,7 @@ if rf.state == Candidate && totalVotes >= majority{
 
 }
 
-func (rf *Raft) startFollower() {
-
-	
-		for !rf.killed(){
-
-			rf.mu.Lock()
-			timePassed := time.Now().Sub(rf.lastTimestamp)
-			
-			if timePassed>=rf.getTimerDuration(){
-				rf.state = Candidate
-				rf.mu.Unlock()
-				return
-			}
-
-			rf.mu.Unlock()
-			time.Sleep(50 * time.Millisecond)
-
-		}
-
-
-}
-
+// request vote set up helper function for candidate election 
 func (rf *Raft) setUpSendRequestVote(server int) bool {
 
 	args := RequestVoteArgs{}
@@ -543,7 +532,31 @@ func (rf *Raft) setUpSendRequestVote(server int) bool {
 
 }
 
+// follower main task 
+func (rf *Raft) startFollower() {
 
+	
+		for !rf.killed(){
+
+			rf.mu.Lock()
+			timePassed := time.Now().Sub(rf.lastTimestamp)
+			
+			// if election timeout, then follower becomes a candidate
+			if timePassed>=rf.getTimerDuration(){
+				rf.state = Candidate
+				rf.mu.Unlock()
+				return
+			}
+
+			rf.mu.Unlock()
+			time.Sleep(50 * time.Millisecond)
+
+		}
+
+
+}
+
+// helper function to convert to a follower 
 func (rf *Raft) convert2Follower(){
 
 	rf.state = Follower
