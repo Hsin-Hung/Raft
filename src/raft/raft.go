@@ -84,7 +84,9 @@ type Raft struct {
 
 	state int      
 
-	timeOutDur int                 
+	timeOutDur int
+	
+	applyMsgCond *sync.Cond
 
 	lastTimestamp time.Time        
 }
@@ -173,20 +175,23 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		return
 	}
 
-	if len(rf.log)==0{
-		rf.log = args.Entries
+	if rf.currentTerm < args.Term {
+		rf.currentTerm = args.Term
+		rf.convert2Follower()
+	}
 
-	}else{
 
-		if args.PrevLogIndex>len(rf.log)-1 || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
+	if args.PrevLogIndex>=len(rf.log) || (args.PrevLogIndex>=0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm){
 
 			reply.Success = false
 			return
-		}
-	
-		rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
-
 	}
+	
+
+
+	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+
+	
 
 
 	if args.LeaderCommit > rf.commitIndex{
@@ -200,11 +205,8 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		}
 
 	}
-
-	if rf.currentTerm < args.Term {
-		rf.currentTerm = args.Term
-		rf.convert2Follower()
-	}
+	rf.applyMsgCond.Broadcast()
+	log.Printf("server %v recieve new entry, now log: %v", rf.me, rf.log)
 
 	rf.lastTimestamp = time.Now()
 
@@ -363,9 +365,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 		index = len(rf.log)
 		rf.log = append(rf.log, newEntry)
-		rf.mu.Unlock()
-
+		log.Printf("leader %v recevies new entry %v",rf.me,rf.log)
 		go rf.appendNewEntry()
+		rf.mu.Unlock()
 	}
 
 	return index, term, isLeader
@@ -395,14 +397,22 @@ func (rf *Raft) sendNewEntries(server int) bool {
 		args.Term = rf.currentTerm
 		args.LeaderID = rf.me
 		args.LeaderCommit = rf.commitIndex   
-		log.Printf("sending new entries %v",args.Entries)
+		
+		args.PrevLogIndex = rf.nextIndex[server]-1
 
-		if len(rf.log)>rf.nextIndex[server]{
-			args.Entries = rf.log[rf.nextIndex[server]:]
-			prevEntry := rf.log[rf.nextIndex[server]-1]
-			args.PrevLogIndex = rf.nextIndex[server]-1
+		if args.PrevLogIndex>=0{
+			prevEntry := rf.log[args.PrevLogIndex]
 			args.PrevLogTerm = prevEntry.Term
 		}
+
+		if len(rf.log) > rf.nextIndex[server]{
+
+			args.Entries = rf.log[rf.nextIndex[server]:]
+
+		}
+		
+		log.Printf("sending new entries %v",args.Entries)
+		
 
 		rf.mu.Unlock()
 
@@ -421,6 +431,7 @@ func (rf *Raft) sendNewEntries(server int) bool {
 
 				rf.nextIndex[server] = len(rf.log)
 				rf.matchIndex[server] = len(rf.log)-1
+				log.Printf("%v", rf.matchIndex)
 				rf.updateCommitIndex()
 				return true
 
@@ -452,7 +463,8 @@ func (rf *Raft) updateCommitIndex(){
 					count++
 					if (count == len(rf.matchIndex)/2+1) && (rf.log[i].Term == rf.currentTerm){
 							rf.commitIndex = i
-							go rf.applyCommittedEntries()
+							rf.applyMsgCond.Broadcast()
+							log.Printf("broadcast %v", rf.commitIndex)
 							return
 					}
 				}
@@ -465,24 +477,39 @@ func (rf *Raft) updateCommitIndex(){
 
 func (rf *Raft) applyCommittedEntries(){
 
-	if rf.commitIndex > rf.lastApplied{
 
-		for rf.lastApplied < rf.commitIndex {
+	for{
 
-			rf.lastApplied++
+		rf.mu.Lock()
+		rf.applyMsgCond.Wait()
+		rf.mu.Unlock()
 
-			newApplyMsg := ApplyMsg{
+		log.Printf("server %v commiting entries, lastapplied: %v, commitIndex: %v, log: %v",rf.me, rf.lastApplied, rf.commitIndex, rf.log)
 
-				CommandValid: true,
-				Command: rf.log[rf.lastApplied].Command,
-				CommandIndex: rf.lastApplied,
+		if rf.commitIndex > rf.lastApplied{
+
+			for rf.lastApplied < rf.commitIndex {
+	
+				rf.lastApplied++
+	
+				newApplyMsg := ApplyMsg{
+	
+					CommandValid: true,
+					Command: rf.log[rf.lastApplied].Command,
+					CommandIndex: rf.lastApplied,
+				}
+	
+				rf.applyCh <- newApplyMsg
+	
 			}
 			
-			rf.applyCh <- newApplyMsg
-
 		}
-		
+
+		log.Printf("After: server %v commiting entries, lastapplied: %v, commitIndex: %v, log: %v",rf.me, rf.lastApplied, rf.commitIndex, rf.log)
+
 	}
+
+
 
 }
 
@@ -529,8 +556,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentTerm = 0
 	rf.voteFor = -1
-	rf.commitIndex = 0
-	rf.lastApplied = 0
+	rf.commitIndex = -1
+	rf.lastApplied = -1
 	rf.state = Follower
 	rf.log = make([] LogEntry, 0)
 	rf.applyCh = applyCh
@@ -540,10 +567,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.timeOutDur = rand.Intn(150) + 350
 	rf.lastTimestamp = time.Now()
 
+	rf.applyMsgCond = sync.NewCond(&rf.mu)
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	go rf.startMainRoutine()
 
+	log.Printf("server %v created",rf.me)
+	go rf.startMainRoutine()
+	go rf.applyCommittedEntries()
 
 	return rf
 }
@@ -618,6 +649,7 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 	rf.mu.Lock()
 	args.LeaderID = rf.me
 	args.Term = rf.currentTerm
+	args.LeaderCommit = rf.commitIndex
 	rf.mu.Unlock()
 
 	ok := rf.sendAppendEntries(server, &args, &reply)
@@ -637,10 +669,10 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 
 func (rf *Raft) leaderStateInit(){
 
-	for i := range rf.nextIndex{
+	for i := range rf.peers{
 
 		rf.nextIndex[i] = len(rf.log)
-		rf.matchIndex[i] = 0
+		rf.matchIndex[i] = -1
 
 	}
 
@@ -700,8 +732,10 @@ func (rf *Raft) setUpSendRequestVote(server int) bool {
 	reply := RequestVoteReply{}
 	rf.mu.Lock()
 	args.CandidateID = rf.me
-	args.LastLogIndex = rf.lastApplied
-	args.LastLogTerm = rf.currentTerm
+	args.LastLogIndex = len(rf.log)-1
+	if len(rf.log)>0{
+		args.LastLogTerm = rf.log[args.LastLogIndex].Term
+	}
 	args.Term = rf.currentTerm
 	rf.mu.Unlock()
 	ok := rf.sendRequestVote(server, &args, &reply)
