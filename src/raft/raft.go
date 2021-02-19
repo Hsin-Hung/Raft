@@ -18,7 +18,7 @@ package raft
 //
 
 import (
-
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -171,13 +171,21 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		return
 	}
 
-	if args.PrevLogIndex>=len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
+	if len(rf.log)==0{
+		rf.log = args.Entries
 
-		reply.Success = false
-		return
+	}else{
+
+		if args.PrevLogIndex>len(rf.log)-1 || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm{
+
+			reply.Success = false
+			return
+		}
+	
+		rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+
 	}
 
-	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
 
 	if args.LeaderCommit > rf.commitIndex{
 
@@ -195,6 +203,8 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		rf.currentTerm = args.Term
 		rf.convert2Follower()
 	}
+
+	log.Printf("foloower gets %v",rf.log)
 
 	rf.lastTimestamp = time.Now()
 
@@ -270,9 +280,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convert2Follower()
 	}
 
-	lastLogEntry := rf.log[len(rf.log) - 1]
-	higherTermCheck := args.LastLogTerm > lastLogEntry.Term
-	higherIndexCheck := (args.LastLogTerm == lastLogEntry.Term) && (args.LastLogIndex >= len(rf.log)-1)
+	higherTermCheck := true
+	higherIndexCheck := true
+
+	if len(rf.log)>0{
+		lastLogEntry := rf.log[len(rf.log) - 1]
+		higherTermCheck = args.LastLogTerm > lastLogEntry.Term
+		higherIndexCheck = (args.LastLogTerm == lastLogEntry.Term) && (args.LastLogIndex >= len(rf.log)-1)
+	}
+
 
 	if (rf.voteFor == -1 || rf.voteFor == args.CandidateID) && (higherTermCheck || higherIndexCheck){
 		rf.voteFor = args.CandidateID
@@ -333,18 +349,22 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
+	rf.mu.Lock()
 	index := rf.lastApplied
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
+	rf.mu.Unlock()
 	// Your code here (2B).
 	if isLeader{
-
+		rf.mu.Lock()
 		newEntry := LogEntry{
 			Term: rf.currentTerm,
 			Command: command,
 		}
 		index = len(rf.log)
 		rf.log = append(rf.log, newEntry)
+		rf.mu.Unlock()
+
 		go rf.appendNewEntry()
 	}
 
@@ -371,34 +391,47 @@ func (rf *Raft) sendNewEntries(server int) bool {
 
 		args := AppendEntriesArgs{}
 		reply := AppendEntriesReply{}	
-	
+		rf.mu.Lock()
 		args.Term = rf.currentTerm
 		args.LeaderID = rf.me
-		args.LeaderCommit = rf.commitIndex
-		args.Entries = rf.log[rf.nextIndex[server]:]   
-	
-		//index out of bound check
-		prevEntry := rf.log[rf.nextIndex[server]-1]
-		args.PrevLogIndex = rf.nextIndex[server]-1
-		args.PrevLogTerm = prevEntry.Term
-	
+		args.LeaderCommit = rf.commitIndex   
+		log.Printf("sending new entries %v",args.Entries)
+
+		if len(rf.log)>rf.nextIndex[server]{
+			args.Entries = rf.log[rf.nextIndex[server]:]
+			prevEntry := rf.log[rf.nextIndex[server]-1]
+			args.PrevLogIndex = rf.nextIndex[server]-1
+			args.PrevLogTerm = prevEntry.Term
+		}
+
+		rf.mu.Unlock()
+
 		ok := rf.sendAppendEntries(server, &args, &reply)
 	
 		if ok{
-	
-			if !reply.Success{
-	
+
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+
+			if reply.Success{
+
+				rf.nextIndex[server] = len(rf.log)
+				rf.matchIndex[server] = len(rf.log)-1
+				rf.updateCommitIndex()
+				return true
+
+			}else {
+
 				rf.nextIndex[server]--;
 				continue 
-	
-			}else {
-				rf.nextIndex[server] = len(rf.log)-1
-				rf.matchIndex[server] = len(rf.log)-1
-				return true
+
 			}
 	
 	
 		}
+
+		
+
 
 
 	}
@@ -406,6 +439,26 @@ func (rf *Raft) sendNewEntries(server int) bool {
 
 	return false 
 
+
+}
+
+func (rf *Raft) updateCommitIndex(){
+
+	for i:=len(rf.log)-1 ; i>=0 ; i-- {
+			
+		if i>rf.commitIndex{
+			count := 0
+			for _, val := range rf.matchIndex{
+				if val >= i{
+					count++
+					if (count == len(rf.matchIndex)/2+1) && (rf.log[i].Term == rf.currentTerm){
+							rf.commitIndex = i
+							return
+					}
+				}
+			}
+		}
+	}
 
 }
 
