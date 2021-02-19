@@ -70,6 +70,8 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
+	applyCh 	chan ApplyMsg
+
 	log         []LogEntry        //log entries
 	currentTerm int
 	voteFor     int
@@ -203,8 +205,6 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		rf.currentTerm = args.Term
 		rf.convert2Follower()
 	}
-
-	log.Printf("foloower gets %v",rf.log)
 
 	rf.lastTimestamp = time.Now()
 
@@ -412,7 +412,11 @@ func (rf *Raft) sendNewEntries(server int) bool {
 
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-
+			if rf.currentTerm < reply.Term {
+				rf.currentTerm = reply.Term
+				rf.convert2Follower()
+				return false
+			}
 			if reply.Success{
 
 				rf.nextIndex[server] = len(rf.log)
@@ -427,12 +431,7 @@ func (rf *Raft) sendNewEntries(server int) bool {
 
 			}
 	
-	
 		}
-
-		
-
-
 
 	}
 
@@ -453,11 +452,36 @@ func (rf *Raft) updateCommitIndex(){
 					count++
 					if (count == len(rf.matchIndex)/2+1) && (rf.log[i].Term == rf.currentTerm){
 							rf.commitIndex = i
+							go rf.applyCommittedEntries()
 							return
 					}
 				}
 			}
 		}
+	}
+
+}
+
+
+func (rf *Raft) applyCommittedEntries(){
+
+	if rf.commitIndex > rf.lastApplied{
+
+		for rf.lastApplied < rf.commitIndex {
+
+			rf.lastApplied++
+
+			newApplyMsg := ApplyMsg{
+
+				CommandValid: true,
+				Command: rf.log[rf.lastApplied].Command,
+				CommandIndex: rf.lastApplied,
+			}
+			
+			rf.applyCh <- newApplyMsg
+
+		}
+		
 	}
 
 }
@@ -509,6 +533,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.state = Follower
 	rf.log = make([] LogEntry, 0)
+	rf.applyCh = applyCh
+	
 	rf.nextIndex = make([] int, len(peers))
 	rf.matchIndex = make([] int, len(peers))
 	rf.timeOutDur = rand.Intn(150) + 350
