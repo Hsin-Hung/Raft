@@ -188,15 +188,19 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	}
 	
 
+	for i := range args.Entries{
 
-	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+		if args.PrevLogIndex+1+i >= len(rf.log) || args.Entries[i].Term != rf.log[args.PrevLogIndex+1+i].Term{
+			rf.log = append(rf.log[:args.PrevLogIndex+1+i],args.Entries[args.PrevLogIndex+1+i:]...)
+			break
+		}
 
-	
+	}
 
 
 	if args.LeaderCommit > rf.commitIndex{
 
-		lastEntryIndex := len(args.Entries)-1
+		lastEntryIndex := len(rf.log)-1
 
 		if args.LeaderCommit > lastEntryIndex{
 			rf.commitIndex = lastEntryIndex
