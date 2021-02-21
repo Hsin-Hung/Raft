@@ -18,7 +18,7 @@ package raft
 //
 
 import (
-	"log"
+	//"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -175,14 +175,15 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		return
 	}
 
-	if rf.currentTerm < args.Term {
+	if rf.currentTerm < args.Term{
 		rf.currentTerm = args.Term
 		rf.convert2Follower()
 	}
 
+	rf.lastTimestamp = time.Now()
 
 	if args.PrevLogIndex>=len(rf.log) || (args.PrevLogIndex>=0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm){
-
+		//rf.printAllStats("append entry fail")
 			reply.Success = false
 			return
 	}
@@ -191,7 +192,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	for i := range args.Entries{
 
 		if args.PrevLogIndex+1+i >= len(rf.log) || args.Entries[i].Term != rf.log[args.PrevLogIndex+1+i].Term{
-			rf.log = append(rf.log[:args.PrevLogIndex+1+i],args.Entries[args.PrevLogIndex+1+i:]...)
+			rf.log = append(rf.log[:args.PrevLogIndex+1+i],args.Entries[i:]...)
 			break
 		}
 
@@ -208,11 +209,13 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 			rf.commitIndex = args.LeaderCommit
 		}
 
-	}
-	rf.applyMsgCond.Broadcast()
-	log.Printf("server %v recieve new entry, now log: %v", rf.me, rf.log)
+		rf.applyMsgCond.Broadcast()
 
-	rf.lastTimestamp = time.Now()
+	}
+
+	//rf.printAllStats("append entry success")
+
+	
 
 }
 
@@ -369,152 +372,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 		index = len(rf.log)
 		rf.log = append(rf.log, newEntry)
-		log.Printf("leader %v recevies new entry %v",rf.me,rf.log)
-		go rf.appendNewEntry()
+		rf.matchIndex[rf.me] = index
+		rf.nextIndex[rf.me] = index + 1
+
 		rf.mu.Unlock()
 	}
 
 	return index, term, isLeader
-}
-
-func (rf *Raft) appendNewEntry(){
-
-	for i := range rf.peers{
-
-		if i!=rf.me{
-
-			go rf.sendNewEntries(i)
-
-		}
-
-	}
-
-}
-
-func (rf *Raft) sendNewEntries(server int) bool {
-
-	for !rf.killed() {
-
-		args := AppendEntriesArgs{}
-		reply := AppendEntriesReply{}	
-		rf.mu.Lock()
-		args.Term = rf.currentTerm
-		args.LeaderID = rf.me
-		args.LeaderCommit = rf.commitIndex   
-		
-		args.PrevLogIndex = rf.nextIndex[server]-1
-
-		if args.PrevLogIndex>=0{
-			prevEntry := rf.log[args.PrevLogIndex]
-			args.PrevLogTerm = prevEntry.Term
-		}
-
-		if len(rf.log) > rf.nextIndex[server]{
-
-			args.Entries = rf.log[rf.nextIndex[server]:]
-
-		}
-		
-		log.Printf("sending new entries %v",args.Entries)
-		
-
-		rf.mu.Unlock()
-
-		ok := rf.sendAppendEntries(server, &args, &reply)
-	
-		if ok{
-
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if rf.currentTerm < reply.Term {
-				rf.currentTerm = reply.Term
-				rf.convert2Follower()
-				return false
-			}
-			if reply.Success{
-
-				rf.nextIndex[server] = len(rf.log)
-				rf.matchIndex[server] = len(rf.log)-1
-				log.Printf("%v", rf.matchIndex)
-				rf.updateCommitIndex()
-				return true
-
-			}else {
-
-				rf.nextIndex[server]--;
-				continue 
-
-			}
-	
-		}
-
-	}
-
-
-	return false 
-
-
-}
-
-func (rf *Raft) updateCommitIndex(){
-
-	for i:=len(rf.log)-1 ; i>=0 ; i-- {
-			
-		if i>rf.commitIndex{
-			count := 0
-			for _, val := range rf.matchIndex{
-				if val >= i{
-					count++
-					if (count == len(rf.matchIndex)/2+1) && (rf.log[i].Term == rf.currentTerm){
-							rf.commitIndex = i
-							rf.applyMsgCond.Broadcast()
-							log.Printf("broadcast %v", rf.commitIndex)
-							return
-					}
-				}
-			}
-		}
-	}
-
-}
-
-
-func (rf *Raft) applyCommittedEntries(){
-
-
-	for{
-
-		rf.mu.Lock()
-		rf.applyMsgCond.Wait()
-		rf.mu.Unlock()
-
-		log.Printf("server %v commiting entries, lastapplied: %v, commitIndex: %v, log: %v",rf.me, rf.lastApplied, rf.commitIndex, rf.log)
-
-		if rf.commitIndex > rf.lastApplied{
-
-			for rf.lastApplied < rf.commitIndex {
-	
-				rf.lastApplied++
-	
-				newApplyMsg := ApplyMsg{
-	
-					CommandValid: true,
-					Command: rf.log[rf.lastApplied].Command,
-					CommandIndex: rf.lastApplied,
-				}
-	
-				rf.applyCh <- newApplyMsg
-	
-			}
-			
-		}
-
-		log.Printf("After: server %v commiting entries, lastapplied: %v, commitIndex: %v, log: %v",rf.me, rf.lastApplied, rf.commitIndex, rf.log)
-
-	}
-
-
-
 }
 
 //
@@ -560,10 +424,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentTerm = 0
 	rf.voteFor = -1
-	rf.commitIndex = -1
-	rf.lastApplied = -1
 	rf.state = Follower
-	rf.log = make([] LogEntry, 0)
+	rf.log = make([] LogEntry, 1)
 	rf.applyCh = applyCh
 	
 	rf.nextIndex = make([] int, len(peers))
@@ -576,11 +438,72 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	log.Printf("server %v created",rf.me)
 	go rf.startMainRoutine()
 	go rf.applyCommittedEntries()
 
 	return rf
+}
+
+func (rf *Raft) updateCommitIndex(){
+
+	for i:=len(rf.log)-1 ; i>rf.commitIndex ; i-- {	
+			count := 0
+			for _, val := range rf.matchIndex{
+				if val >= i{
+					count++
+					if (count == len(rf.matchIndex)/2+1) && (rf.log[i].Term == rf.currentTerm){
+							rf.commitIndex = i
+							rf.applyMsgCond.Broadcast()
+							return
+					}
+				}
+			}
+		
+	}
+
+}
+
+
+func (rf *Raft) applyCommittedEntries(){
+
+
+	for{
+
+		rf.mu.Lock()
+		rf.applyMsgCond.Wait()
+		lastApplied := rf.lastApplied
+		commitIndex := rf.commitIndex
+		log := rf.log
+		rf.mu.Unlock()
+	
+			for i:=lastApplied+1;i<=commitIndex;i++ {
+	
+				newApplyMsg := ApplyMsg{
+	
+					CommandValid: true,
+					Command: log[i].Command,
+					CommandIndex: i,
+
+				}
+				//rf.printAllStats("send to apply msg channel ")
+
+				rf.mu.Lock()
+				rf.lastApplied = i
+				rf.mu.Unlock()
+	
+				rf.applyCh <- newApplyMsg
+
+			}
+			
+		
+
+		//rf.printAllStats("apply commit ")
+
+
+	}
+
+
+
 }
 
 // get the election time duration 
@@ -648,35 +571,62 @@ func (rf *Raft) startLeaderHeartBeats() {
 func (rf *Raft) sendHeartBeat(server int) bool {
 
 	args := AppendEntriesArgs{}
-	reply := AppendEntriesReply{}
-
+	reply := AppendEntriesReply{}	
 	rf.mu.Lock()
-	args.LeaderID = rf.me
 	args.Term = rf.currentTerm
-	args.LeaderCommit = rf.commitIndex
-	rf.mu.Unlock()
+	args.LeaderID = rf.me
+	args.LeaderCommit = rf.commitIndex   
+	
+	args.PrevLogIndex = rf.nextIndex[server]-1
 
-	ok := rf.sendAppendEntries(server, &args, &reply)
-
-	if ok {
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		if rf.currentTerm < reply.Term {
-			rf.currentTerm = reply.Term
-			rf.convert2Follower()
-		}
-		return reply.Success
+	if args.PrevLogIndex>=0{
+		prevEntry := rf.log[args.PrevLogIndex]
+		args.PrevLogTerm = prevEntry.Term
 	}
 
-	return false
+	if len(rf.log) > rf.nextIndex[server]{
+		args.Entries = rf.log[rf.nextIndex[server]:]
+	}
+	rf.mu.Unlock()
+	//rf.printAllStats("before send heart beat")
+	ok := rf.sendAppendEntries(server, &args, &reply)
+
+	if ok{
+
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if reply.Success{
+			//rf.printAllStats("send heart beat receive success")
+			rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
+			rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
+			rf.updateCommitIndex()
+			return true
+
+		}else{
+
+			if rf.currentTerm < reply.Term {
+				rf.currentTerm = reply.Term
+				rf.convert2Follower()
+				return false
+			}
+
+			//rf.printAllStats("send heart beat receive fail")
+			rf.nextIndex[server] = args.PrevLogIndex;
+
+		}
+
+	}
+
+
+return false 
 }
 
 func (rf *Raft) leaderStateInit(){
-
+	//rf.printAllStats("leader init ")
 	for i := range rf.peers{
 
 		rf.nextIndex[i] = len(rf.log)
-		rf.matchIndex[i] = -1
+		rf.matchIndex[i] = 0
 
 	}
 
@@ -793,5 +743,12 @@ func (rf *Raft) convert2Leader(){
 
 	rf.state = Leader 
 	rf.leaderStateInit()
+
+}
+
+
+func (rf *Raft) printAllStats(header string){
+
+	//log.Printf("%v : Server %v with state %v: log: %v, currentTerm: %v, commitIndex: %v, lastApplied: %v, nextIndex %v, matchIndex %v", header, rf.me, rf.state, rf.log, rf.currentTerm, rf. commitIndex, rf.lastApplied,rf.nextIndex, rf.matchIndex)
 
 }
