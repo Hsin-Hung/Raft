@@ -192,7 +192,9 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	for i := range args.Entries{
 
 		if args.PrevLogIndex+1+i >= len(rf.log) || args.Entries[i].Term != rf.log[args.PrevLogIndex+1+i].Term{
-			rf.log = append(rf.log[:args.PrevLogIndex+1+i],args.Entries[i:]...)
+			// newEntries := make([] LogEntry, len(args.Entries[i:]))
+			// copy(newEntries, args.Entries[i:])
+			rf.log = append(rf.log[:args.PrevLogIndex+1+i], args.Entries[i:]...)
 			break
 		}
 
@@ -585,7 +587,9 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 	}
 
 	if len(rf.log) > rf.nextIndex[server]{
-		args.Entries = rf.log[rf.nextIndex[server]:]
+		newEntries := make([] LogEntry, len(rf.log[rf.nextIndex[server]:]))
+		copy(newEntries, rf.log[rf.nextIndex[server]:])
+		args.Entries = newEntries
 	}
 	rf.mu.Unlock()
 	//rf.printAllStats("before send heart beat")
