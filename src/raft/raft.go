@@ -158,6 +158,7 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
 }
 
 //
@@ -184,21 +185,21 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	if args.PrevLogIndex>=len(rf.log) || (args.PrevLogIndex>=0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm){
 		//rf.printAllStats("append entry fail")
-			reply.Success = false
-			return
+		reply.Success = false
+		return
 	}
 	
 
 	for i := range args.Entries{
 
 		if args.PrevLogIndex+1+i >= len(rf.log) || args.Entries[i].Term != rf.log[args.PrevLogIndex+1+i].Term{
-			// newEntries := make([] LogEntry, len(args.Entries[i:]))
-			// copy(newEntries, args.Entries[i:])
 			rf.log = append(rf.log[:args.PrevLogIndex+1+i], args.Entries[i:]...)
 			break
 		}
 
 	}
+
+	
 
 
 	if args.LeaderCommit > rf.commitIndex{
@@ -361,13 +362,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	index := rf.lastApplied
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
-	rf.mu.Unlock()
 	// Your code here (2B).
 	if isLeader{
-		rf.mu.Lock()
 		newEntry := LogEntry{
 			Term: rf.currentTerm,
 			Command: command,
@@ -376,8 +377,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, newEntry)
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me] = index + 1
-
-		rf.mu.Unlock()
 	}
 
 	return index, term, isLeader
@@ -625,19 +624,6 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 return false 
 }
 
-func (rf *Raft) leaderStateInit(){
-	//rf.printAllStats("leader init ")
-	for i := range rf.peers{
-
-		rf.nextIndex[i] = len(rf.log)
-		rf.matchIndex[i] = 0
-
-	}
-
-
-
-}
-
 // candidate will start an election 
 func (rf *Raft) startCandidateElection() {
 
@@ -747,6 +733,24 @@ func (rf *Raft) convert2Leader(){
 
 	rf.state = Leader 
 	rf.leaderStateInit()
+
+}
+
+func (rf *Raft) leaderStateInit(){
+	//rf.printAllStats("leader init ")
+	rf.nextIndex[rf.me] = len(rf.log)
+	rf.matchIndex[rf.me] = len(rf.log)-1
+
+	for i := range rf.peers{
+
+		if i!=rf.me{
+			rf.nextIndex[i] = len(rf.log)
+			rf.matchIndex[i] = 0
+		}
+
+	}
+
+
 
 }
 
