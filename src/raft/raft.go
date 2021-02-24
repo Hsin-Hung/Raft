@@ -171,11 +171,13 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	reply.Success = true
 	reply.Term = rf.currentTerm
 
+	// 1. Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
 	}
 
+	// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower 
 	if rf.currentTerm < args.Term{
 		rf.currentTerm = args.Term
 		rf.convert2Follower()
@@ -183,12 +185,17 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	rf.lastTimestamp = time.Now()
 
+	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
+    // whose term matches prevLogTerm
 	if args.PrevLogIndex>=len(rf.log) || (args.PrevLogIndex>=0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm){
 		//rf.printAllStats("append entry fail")
 		reply.Success = false
 		return
 	}
 	
+	// 3. If an existing entry conflicts with a new one (same index
+	// 	but different terms), delete the existing entry and all that
+	// 	follow it 
 
 	for i := range args.Entries{
 
@@ -196,12 +203,11 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 			rf.log = append(rf.log[:args.PrevLogIndex+1+i], args.Entries[i:]...)
 			break
 		}
-
 	}
 
-	
 
-
+	// 5. If leaderCommit > commitIndex, set commitIndex =
+	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex{
 
 		lastEntryIndex := len(rf.log)-1
@@ -211,15 +217,12 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		}else{
 			rf.commitIndex = args.LeaderCommit
 		}
-
 		rf.applyMsgCond.Broadcast()
 
 	}
 
 	//rf.printAllStats("append entry success")
-
-	
-
+	reply.Term = rf.currentTerm
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -283,10 +286,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 
+	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
 		return
 	}
 
+	// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if rf.currentTerm < args.Term {
 		rf.currentTerm = args.Term
 		rf.convert2Follower()
@@ -301,12 +306,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		higherIndexCheck = (args.LastLogTerm == lastLogEntry.Term) && (args.LastLogIndex >= len(rf.log)-1)
 	}
 
-
+    // 2. If votedFor is null or candidateId, and candidate’s log is at
+    // least as up-to-date as receiver’s log, grant vote
 	if (rf.voteFor == -1 || rf.voteFor == args.CandidateID) && (higherTermCheck || higherIndexCheck){
 		rf.voteFor = args.CandidateID
 		reply.VoteGranted = true
 		rf.lastTimestamp = time.Now()
 	}
+
+	reply.Term = rf.currentTerm
 
 }
 
@@ -364,7 +372,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	index := rf.lastApplied
+	index := -1
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
 	// Your code here (2B).
@@ -374,6 +382,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Command: command,
 		}
 		index = len(rf.log)
+		// If command received from client: append entry to local log
 		rf.log = append(rf.log, newEntry)
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me] = index + 1
@@ -424,6 +433,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentTerm = 0
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 	rf.voteFor = -1
 	rf.state = Follower
 	rf.log = make([] LogEntry, 1)
@@ -431,7 +442,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	
 	rf.nextIndex = make([] int, len(peers))
 	rf.matchIndex = make([] int, len(peers))
-	rf.timeOutDur = rand.Intn(150) + 350
+	rf.timeOutDur = rand.Intn(250) + 400
 	rf.lastTimestamp = time.Now()
 
 	rf.applyMsgCond = sync.NewCond(&rf.mu)
@@ -452,7 +463,7 @@ func (rf *Raft) updateCommitIndex(){
 			for _, val := range rf.matchIndex{
 				if val >= i{
 					count++
-					if (count == len(rf.matchIndex)/2+1) && (rf.log[i].Term == rf.currentTerm){
+					if (count > len(rf.matchIndex)/2) && (rf.log[i].Term == rf.currentTerm){
 							rf.commitIndex = i
 							rf.applyMsgCond.Broadcast()
 							return
@@ -468,7 +479,7 @@ func (rf *Raft) updateCommitIndex(){
 func (rf *Raft) applyCommittedEntries(){
 
 
-	for{
+	for !rf.killed(){
 
 		rf.mu.Lock()
 		rf.applyMsgCond.Wait()
@@ -486,20 +497,12 @@ func (rf *Raft) applyCommittedEntries(){
 					CommandIndex: i,
 
 				}
-				//rf.printAllStats("send to apply msg channel ")
-
 				rf.mu.Lock()
 				rf.lastApplied = i
 				rf.mu.Unlock()
-	
 				rf.applyCh <- newApplyMsg
 
 			}
-			
-		
-
-		//rf.printAllStats("apply commit ")
-
 
 	}
 
@@ -517,7 +520,7 @@ func (rf *Raft) getTimerDuration() time.Duration {
 // randomize the election time duration 
 func (rf *Raft) randomizeTimerDuration(){
 
-	rf.timeOutDur = rand.Intn(150) + 350
+	rf.timeOutDur = rand.Intn(250) + 400
 
 }
 
@@ -577,16 +580,14 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 	args.Term = rf.currentTerm
 	args.LeaderID = rf.me
 	args.LeaderCommit = rf.commitIndex   
-	
 	args.PrevLogIndex = rf.nextIndex[server]-1
 
 	if args.PrevLogIndex>=0{
-		prevEntry := rf.log[args.PrevLogIndex]
-		args.PrevLogTerm = prevEntry.Term
+		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 	}
-
+	// If last log index ≥ nextIndex for a follower
 	if len(rf.log) > rf.nextIndex[server]{
-		newEntries := make([] LogEntry, len(rf.log[rf.nextIndex[server]:]))
+		newEntries := make([] LogEntry, len(rf.log)-rf.nextIndex[server])
 		copy(newEntries, rf.log[rf.nextIndex[server]:])
 		args.Entries = newEntries
 	}
@@ -612,14 +613,11 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 				rf.convert2Follower()
 				return false
 			}
-
-			//rf.printAllStats("send heart beat receive fail")
 			rf.nextIndex[server] = args.PrevLogIndex;
 
 		}
 
 	}
-
 
 return false 
 }
@@ -644,7 +642,7 @@ func (rf *Raft) startCandidateElection() {
 				getVote := rf.setUpSendRequestVote(server)
 				rf.mu.Lock()
 				processedVotes++
-				if getVote {
+				if getVote{
 					totalVotes++
 				}
 				cond.Broadcast()
@@ -722,7 +720,7 @@ func (rf *Raft) startFollower() {
 
 // helper function to convert to a follower 
 func (rf *Raft) convert2Follower(){
-
+	//log.Printf("SERVER %v becomes FOLLOWER\n", rf.me)
 	rf.state = Follower
 	rf.voteFor = -1
 	rf.randomizeTimerDuration()
@@ -731,6 +729,7 @@ func (rf *Raft) convert2Follower(){
 
 func (rf *Raft) convert2Leader(){
 
+	//log.Printf("SERVER %v becomes LEADER\n", rf.me)
 	rf.state = Leader 
 	rf.leaderStateInit()
 
@@ -757,6 +756,5 @@ func (rf *Raft) leaderStateInit(){
 
 func (rf *Raft) printAllStats(header string){
 
-	//log.Printf("%v : Server %v with state %v: log: %v, currentTerm: %v, commitIndex: %v, lastApplied: %v, nextIndex %v, matchIndex %v", header, rf.me, rf.state, rf.log, rf.currentTerm, rf. commitIndex, rf.lastApplied,rf.nextIndex, rf.matchIndex)
-
+	//log.Printf("%v : Server %v with state %v: currentTerm: %v, commitIndex: %v, lastApplied: %v, nextIndex %v, matchIndex %v \n", header, rf.me, rf.state, rf.currentTerm, rf. commitIndex, rf.lastApplied,rf.nextIndex, rf.matchIndex);
 }
