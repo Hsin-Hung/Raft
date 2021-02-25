@@ -158,7 +158,8 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
-
+	ConflictTerm int
+	ConflictIndex int
 }
 
 //
@@ -170,6 +171,8 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	defer rf.mu.Unlock()
 	reply.Success = true
 	reply.Term = rf.currentTerm
+	reply.ConflictIndex = -1
+	reply.ConflictTerm = -1
 
 	// 1. Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
@@ -188,7 +191,22 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
     // whose term matches prevLogTerm
 	if args.PrevLogIndex>=len(rf.log) || (args.PrevLogIndex>=0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm){
-		//rf.printAllStats("append entry fail")
+	
+		if args.PrevLogIndex>=len(rf.log){
+
+			reply.ConflictIndex = len(rf.log)
+
+		}else{
+			reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+			for i, val := range rf.log{
+
+				if val.Term == reply.ConflictTerm{
+					reply.ConflictIndex = i 
+					break
+				}
+
+			}
+		}
 		reply.Success = false
 		return
 	}
@@ -485,16 +503,19 @@ func (rf *Raft) applyCommittedEntries(){
 		rf.applyMsgCond.Wait()
 		lastApplied := rf.lastApplied
 		commitIndex := rf.commitIndex
-		log := rf.log
 		rf.mu.Unlock()
-	
-			for i:=lastApplied+1;i<=commitIndex;i++ {
+
+		if lastApplied < commitIndex{
+			log := make([] LogEntry, commitIndex-lastApplied)
+			copy(log, rf.log[lastApplied+1:commitIndex+1])
+
+			for i:=0;i<len(log);i++ {
 	
 				newApplyMsg := ApplyMsg{
 	
 					CommandValid: true,
 					Command: log[i].Command,
-					CommandIndex: i,
+					CommandIndex: lastApplied + i + 1,
 
 				}
 				rf.mu.Lock()
@@ -503,6 +524,8 @@ func (rf *Raft) applyCommittedEntries(){
 				rf.applyCh <- newApplyMsg
 
 			}
+		
+		}
 
 	}
 
@@ -599,6 +622,16 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+
+		if rf.currentTerm < reply.Term {
+			rf.currentTerm = reply.Term
+			rf.convert2Follower()
+			return false
+		}
+		if args.Term != reply.Term{
+			return false
+		}
+
 		if reply.Success{
 			//rf.printAllStats("send heart beat receive success")
 			rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
@@ -606,16 +639,34 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 			rf.updateCommitIndex()
 			return true
 
+		}
+
+		if reply.ConflictTerm != -1{
+
+			found := false
+
+			for i := args.PrevLogIndex ; i>0 ; i--{
+
+				if rf.log[i].Term == reply.ConflictTerm{
+
+					rf.nextIndex[server] = i+1
+					found = true
+					break
+				}
+
+			}
+
+			if !found{
+				rf.nextIndex[server] = reply.ConflictIndex;
+			}
+
 		}else{
 
-			if rf.currentTerm < reply.Term {
-				rf.currentTerm = reply.Term
-				rf.convert2Follower()
-				return false
-			}
-			rf.nextIndex[server] = args.PrevLogIndex;
+			rf.nextIndex[server] = reply.ConflictIndex;
 
-		}
+		}	
+
+		
 
 	}
 
@@ -687,8 +738,10 @@ func (rf *Raft) setUpSendRequestVote(server int) bool {
 		if rf.currentTerm < reply.Term {
 			rf.currentTerm = reply.Term
 			rf.convert2Follower()
+			return false
 		}
 		return reply.VoteGranted
+		
 	}
 	return false
 
