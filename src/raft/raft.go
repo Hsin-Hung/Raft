@@ -197,6 +197,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 			reply.ConflictIndex = len(rf.log)
 
 		}else{
+
 			reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
 			for i, val := range rf.log{
 
@@ -206,6 +207,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 				}
 
 			}
+
 		}
 		reply.Success = false
 		return
@@ -221,6 +223,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 			rf.log = append(rf.log[:args.PrevLogIndex+1+i], args.Entries[i:]...)
 			break
 		}
+
 	}
 
 
@@ -518,10 +521,10 @@ func (rf *Raft) applyCommittedEntries(){
 					CommandIndex: lastApplied + i + 1,
 
 				}
+				rf.applyCh <- newApplyMsg
 				rf.mu.Lock()
 				rf.lastApplied = i
 				rf.mu.Unlock()
-				rf.applyCh <- newApplyMsg
 
 			}
 		
@@ -595,7 +598,7 @@ func (rf *Raft) startLeaderHeartBeats() {
 }
 
 // leader's helper function to send heart beats to peers
-func (rf *Raft) sendHeartBeat(server int) bool {
+func (rf *Raft) sendHeartBeat(server int){
 
 	args := AppendEntriesArgs{}
 	reply := AppendEntriesReply{}	
@@ -623,21 +626,23 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 
+		if args.Term != rf.currentTerm{ 
+			return
+		}
+
 		if rf.currentTerm < reply.Term {
 			rf.currentTerm = reply.Term
 			rf.convert2Follower()
-			return false
+			return
 		}
-		if args.Term != reply.Term{
-			return false
-		}
+
 
 		if reply.Success{
 			//rf.printAllStats("send heart beat receive success")
 			rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
 			rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
 			rf.updateCommitIndex()
-			return true
+			return
 
 		}
 
@@ -670,7 +675,7 @@ func (rf *Raft) sendHeartBeat(server int) bool {
 
 	}
 
-return false 
+return
 }
 
 // candidate will start an election 
@@ -692,9 +697,11 @@ func (rf *Raft) startCandidateElection() {
 			go func(server int) {
 				getVote := rf.setUpSendRequestVote(server)
 				rf.mu.Lock()
-				processedVotes++
-				if getVote{
-					totalVotes++
+				if getVote!=-1{
+					processedVotes++
+					if getVote==1{
+						totalVotes++
+					}
 				}
 				cond.Broadcast()
 				rf.mu.Unlock()
@@ -719,7 +726,7 @@ if rf.state == Candidate && totalVotes >= majority{
 }
 
 // request vote set up helper function for candidate election 
-func (rf *Raft) setUpSendRequestVote(server int) bool {
+func (rf *Raft) setUpSendRequestVote(server int) int {
 
 	args := RequestVoteArgs{}
 	reply := RequestVoteReply{}
@@ -735,15 +742,25 @@ func (rf *Raft) setUpSendRequestVote(server int) bool {
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+
+		if args.Term != rf.currentTerm{
+			return -1
+		}
+		
 		if rf.currentTerm < reply.Term {
 			rf.currentTerm = reply.Term
 			rf.convert2Follower()
-			return false
+			return 0
 		}
-		return reply.VoteGranted
+
+		if reply.VoteGranted{
+			return 1
+		}else{
+			return 0
+		}
 		
 	}
-	return false
+	return 0
 
 }
 
