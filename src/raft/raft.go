@@ -523,7 +523,7 @@ func (rf *Raft) applyCommittedEntries(){
 				}
 				rf.applyCh <- newApplyMsg
 				rf.mu.Lock()
-				rf.lastApplied = i
+				rf.lastApplied = lastApplied + i + 1
 				rf.mu.Unlock()
 
 			}
