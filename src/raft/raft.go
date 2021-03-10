@@ -533,7 +533,6 @@ func (rf *Raft) applyCommittedEntries(){
 		commitIndex := rf.commitIndex
 		log := make([]LogEntry, len(rf.log))
 		copy(log, rf.log)
-		rf.debug("Applying Commit Entries" )
 		rf.mu.Unlock()
 		
 		if lastApplied < commitIndex{
@@ -590,7 +589,7 @@ func (rf *Raft) startMainRoutine() {
 
 		case Leader:
 			rf.startLeaderHeartBeats()
-			time.Sleep(time.Millisecond * 100)
+			time.Sleep(time.Millisecond * 100)// heartbeat interval 
 			break
 		case Candidate:
 			rf.startCandidateElection()
@@ -644,7 +643,6 @@ func (rf *Raft) sendHeartBeat(server int){
 		copy(newEntries, rf.log[rf.nextIndex[server]:])
 		args.Entries = newEntries
 	}
-	rf.debug("Sending Append Entries")
 	rf.mu.Unlock()
 	ok := rf.sendAppendEntries(server, &args, &reply)
 
@@ -653,6 +651,7 @@ func (rf *Raft) sendHeartBeat(server int){
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 
+		// outdated rpc 
 		if args.Term != rf.currentTerm{ 
 			return
 		}
@@ -672,10 +671,12 @@ func (rf *Raft) sendHeartBeat(server int){
 
 		}
 
+		// if there is conflict term and index
 		if reply.ConflictTerm != -1{
 
 			found := false
 
+			// if an entry is found with this conflict term
 			for i := len(rf.log)-1 ; i>0 ; i--{
 
 				if rf.log[i].Term == reply.ConflictTerm{
@@ -687,6 +688,7 @@ func (rf *Raft) sendHeartBeat(server int){
 
 			}
 
+			//if not found
 			if !found{
 				rf.nextIndex[server] = reply.ConflictIndex;
 			}
@@ -714,7 +716,6 @@ func (rf *Raft) startCandidateElection() {
 	rf.voteFor = rf.me
 	majority := len(rf.peers)/2 + 1
 	electionStartTime := time.Now()
-	rf.debug("Start Candidate Election")
 	rf.mu.Unlock()
 
 	cond := sync.NewCond(&rf.mu)
@@ -769,6 +770,7 @@ func (rf *Raft) setUpSendRequestVote(server int) int {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 
+		// outdated rpc 
 		if args.Term != rf.currentTerm{
 			return -1
 		}
@@ -817,7 +819,6 @@ func (rf *Raft) startFollower() {
 // helper function to convert to a follower 
 func (rf *Raft) convert2Follower(){
 
-	rf.debug("becomes FOLLOWER")
 	rf.state = Follower
 	rf.voteFor = -1
 	rf.randomizeTimerDuration()
@@ -826,12 +827,12 @@ func (rf *Raft) convert2Follower(){
 
 func (rf *Raft) convert2Leader(){
 
-	rf.debug("becomes LEADER")
 	rf.state = Leader 
 	rf.leaderStateInit()
 
 }
 
+//leader set up next index and match index for all servers 
 func (rf *Raft) leaderStateInit(){
 
 	rf.nextIndex[rf.me] = len(rf.log)
@@ -860,17 +861,3 @@ func min(first int, second int) int{
 
 }
 
-func (rf *Raft) getState() string{
-
-	states := [3]string{"LEADER", "CANDIDATE", "FOLLOWER"}
-
-	return states[rf.state]
-
-
-}
-
-func (rf *Raft) debug(s string) {
-
-	//log.Printf("%v %v with current Term: %v, commitIndex: %v, lastApplied %v in %v", rf.getState(), rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied, s)
-
-}
