@@ -175,8 +175,6 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 		return
 	}
 
-	//log.Printf("%v %v with current Term: %v, commitIndex: %v, lastApplied %v in Append Entry Handler from LEADER %v", rf.getState(), rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied, args.LeaderID)
-
 	reply.Success = true
 	reply.Term = rf.currentTerm
 	reply.ConflictIndex = -1
@@ -314,8 +312,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.killed(){
 		return 
 	}
-
-	//log.Printf("%v %v with current Term: %v, commitIndex: %v, lastApplied %v in Request Vote Handler from CANDIDATE %v", rf.getState(), rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied, args.CandidateID)
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
