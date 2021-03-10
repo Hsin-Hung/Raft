@@ -86,9 +86,10 @@ type Raft struct {
 
 	applyMsgCond *sync.Cond		// notify for applying entries to state machine
 
-	timeOutDur int				// election time out duration  
+	electionTimeoutDur int				// election time out duration  
 
 	lastTimestamp time.Time     // keep track of the last time server receives leader heart beat 
+	
 }
 
 // return currentTerm and whether this server
@@ -241,12 +242,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	if args.LeaderCommit > rf.commitIndex{
 
 		lastEntryIndex := len(rf.log)-1
-
-		if args.LeaderCommit > lastEntryIndex{
-			rf.commitIndex = lastEntryIndex
-		}else{
-			rf.commitIndex = args.LeaderCommit
-		}
+		rf.commitIndex = min(args.LeaderCommit, lastEntryIndex)
 		rf.applyMsgCond.Broadcast()
 
 	}
@@ -486,7 +482,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	
 	rf.nextIndex = make([] int, len(peers))
 	rf.matchIndex = make([] int, len(peers))
-	rf.timeOutDur = rand.Intn(250) + 400
+	rf.electionTimeoutDur = rand.Intn(250) + 400
 	rf.lastTimestamp = time.Now()
 
 	rf.applyMsgCond = sync.NewCond(&rf.mu)
@@ -568,16 +564,16 @@ func (rf *Raft) applyCommittedEntries(){
 }
 
 // get the election time duration 
-func (rf *Raft) getTimerDuration() time.Duration {
+func (rf *Raft) getElectionTimeoutDuration() time.Duration {
 
-	return time.Duration(rf.timeOutDur) * time.Millisecond
+	return time.Duration(rf.electionTimeoutDur) * time.Millisecond
 
 }
 
 // randomize the election time duration 
 func (rf *Raft) randomizeTimerDuration(){
 
-	rf.timeOutDur = rand.Intn(250) + 400
+	rf.electionTimeoutDur = rand.Intn(250) + 400
 
 }
 
@@ -680,11 +676,11 @@ func (rf *Raft) sendHeartBeat(server int){
 
 			found := false
 
-			for i := args.PrevLogIndex ; i>0 ; i--{
+			for i := len(rf.log)-1 ; i>0 ; i--{
 
 				if rf.log[i].Term == reply.ConflictTerm{
 
-					rf.nextIndex[server] = i+1
+					rf.nextIndex[server] = min(i, reply.ConflictIndex) 
 					found = true
 					break
 				}
@@ -701,7 +697,7 @@ func (rf *Raft) sendHeartBeat(server int){
 
 		}	
 
-		
+		rf.matchIndex[server] = rf.nextIndex[server] - 1
 
 	}
 
@@ -742,7 +738,7 @@ func (rf *Raft) startCandidateElection() {
 rf.mu.Lock()
 defer rf.mu.Unlock()
 
-for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candidate && time.Now().Sub(electionStartTime)<rf.getTimerDuration(){
+for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candidate && time.Now().Sub(electionStartTime)<rf.getElectionTimeoutDuration(){
 
 	cond.Wait()
 }
@@ -804,14 +800,14 @@ func (rf *Raft) startFollower() {
 			timePassed := time.Now().Sub(rf.lastTimestamp)
 			
 			// if election timeout, then follower becomes a candidate
-			if timePassed>=rf.getTimerDuration(){
+			if timePassed>=rf.getElectionTimeoutDuration(){
 				rf.state = Candidate
 				rf.mu.Unlock()
 				return
 			}
 
 			rf.mu.Unlock()
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 
 		}
 
@@ -851,6 +847,16 @@ func (rf *Raft) leaderStateInit(){
 	}
 
 
+
+}
+
+func min(first int, second int) int{
+
+	if first > second{
+		return second
+	}else{
+		return first 
+	}
 
 }
 
