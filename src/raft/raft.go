@@ -406,6 +406,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	index := -1
 	term := rf.currentTerm
@@ -649,6 +650,7 @@ func (rf *Raft) sendHeartBeat(server int){
 
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+		defer rf.persist()
 
 		// outdated rpc 
 		if args.Term != rf.currentTerm{ 
@@ -713,6 +715,7 @@ func (rf *Raft) startCandidateElection() {
 	totalVotes := 1
 	processedVotes := 1
 	rf.voteFor = rf.me
+	rf.persist()
 	majority := len(rf.peers)/2 + 1
 	electionStartTime := time.Now()
 	rf.mu.Unlock()
@@ -768,6 +771,7 @@ func (rf *Raft) setUpSendRequestVote(server int) int {
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+		defer rf.persist()
 
 		// outdated rpc 
 		if args.Term != rf.currentTerm{
@@ -821,6 +825,7 @@ func (rf *Raft) convert2Follower(){
 	rf.state = Follower
 	rf.voteFor = -1
 	rf.randomizeTimerDuration()
+	rf.persist()
 
 }
 
