@@ -178,17 +178,15 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg, stopCh <-chan struct{})
 					} else {
 						cfg.nextIndex[i]++
 					}
-					cfg.mu.Unlock()
 
 					if m.CommandValid == false {
 						// ignore other types of ApplyMsg
 					} else {
 						if err_msg == "" {
-							cfg.mu.Lock()
 							err_msg = cfg.checkLogs(i, m)
-							cfg.mu.Unlock()
 						}
 					}
+					cfg.mu.Unlock()
 
 					if err_msg != "" {
 						log.Fatalf("apply error: %v\n", err_msg)
@@ -458,6 +456,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
+		commitIndex := cfg.nextIndex[i]
 		cfg.mu.Unlock()
 
 		if ok {
@@ -468,10 +467,6 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 			count += 1
 			cmd = cmd1
 		} else {
-			cfg.mu.Lock()
-			commitIndex := cfg.nextIndex[i]
-			cfg.mu.Unlock()
-
 			if commitIndex > index {
 				// Dummy log entry.
 				if cmd != nil {
