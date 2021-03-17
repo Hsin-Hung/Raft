@@ -25,7 +25,7 @@ import (
 	"6.824/labrpc"
 	"6.824/labgob"
 	"bytes"
-	//"log"
+	"log"
 )
 
 // import "bytes"
@@ -116,9 +116,11 @@ func (rf *Raft) persist() {
 	// Example:
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.voteFor)
-	e.Encode(rf.log)
+	if e.Encode(rf.currentTerm) != nil || 
+	e.Encode(rf.voteFor) != nil ||
+	e.Encode(rf.log) != nil {
+		log.Printf("labgob encode error")
+	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -140,6 +142,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.voteFor) != nil || 
 	d.Decode(&rf.log) != nil{
 		// there is error
+		log.Printf("labgob decode error")
 	}
 
 }
