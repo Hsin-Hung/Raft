@@ -138,12 +138,20 @@ func (rf *Raft) readPersist(data []byte) {
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 
-	if d.Decode(&rf.currentTerm) != nil || 
-	d.Decode(&rf.voteFor) != nil || 
-	d.Decode(&rf.log) != nil{
+	var currentTerm int 
+	var voteFor int
+	var logs []LogEntry
+
+	if d.Decode(&currentTerm) != nil || 
+	d.Decode(&voteFor) != nil || 
+	d.Decode(&logs) != nil{
 		// there is error
 		log.Printf("labgob decode error")
 	}
+
+	rf.currentTerm = currentTerm
+	rf.voteFor = voteFor
+	rf.log = logs
 
 }
 type LogEntry struct {
@@ -828,7 +836,6 @@ func (rf *Raft) convert2Follower(){
 	rf.state = Follower
 	rf.voteFor = -1
 	rf.randomizeTimerDuration()
-	rf.persist()
 
 }
 
