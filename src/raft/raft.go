@@ -288,7 +288,77 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
+	trimmedLog := make([] LogEntry, len(rf.log)-index - 1)
+	trimmedLog = append(trimmedLog, rf.log[index+1:]...)
+	rf.log = trimmedLog
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(rf.currentTerm) != nil || 
+	e.Encode(rf.voteFor) != nil ||
+	e.Encode(rf.log) != nil {
+		log.Printf("labgob encode error")
+	}
+	data := w.Bytes()
+	rf.persister.SaveStateAndSnapshot(data, snapshot)
+
 }
+
+type InstallSnapshotArgs struct{
+	Term int
+	LeaderID int
+	LastIncludedIndex int
+	LastIncludedTerm int
+	Offset int
+	data[] []byte
+	Done bool
+}
+
+type InstallSnapshotReply struct{
+	Term int	
+}
+
+
+func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnapshotReply){
+
+		reply.Term = rf.currentTerm
+
+
+		// 1. Reply immediately if term < currentTerm
+		if args.Term < rf.currentTerm{
+			return
+		}
+		// 2. Create new snapshot file if first chunk (offset is 0)
+		if args.Offset == 0{
+
+		}
+		// 3. Write data into snapshot file at given offset
+
+		// 4. Reply and wait for more data chunks if done is false
+
+		// 5. Save snapshot file, discard any existing or partial snapshot
+		// with a smaller index
+
+		// 6. If existing log entry has same index and term as snapshot’s
+		// last included entry, retain log entries following it and reply
+
+		// 7. Discard the entire log
+
+		// 8. Reset state machine using snapshot contents (and load
+		// snapshot’s cluster configuration)
+}
+
+func (rf *Raft) sendInstallSnapshot(){
+
+	
+
+
+
+
+
+}
+
+
 
 //
 // example RequestVote RPC arguments structure.
