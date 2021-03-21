@@ -84,6 +84,9 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
+	lastIncludedIndex int
+	lastIncludedTerm int 
+
 	state int      
 
 	applyMsgCond *sync.Cond		// notify for applying entries to state machine
@@ -118,7 +121,9 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	if e.Encode(rf.currentTerm) != nil || 
 	e.Encode(rf.voteFor) != nil ||
-	e.Encode(rf.log) != nil {
+	e.Encode(rf.log) != nil ||
+	e.Encode(rf.lastIncludedIndex) != nil ||
+	e.Encode(rf.lastIncludedTerm) != nil{
 		log.Printf("labgob encode error")
 	}
 	data := w.Bytes()
@@ -141,10 +146,14 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int 
 	var voteFor int
 	var logs []LogEntry
+	var lastIncludedIndex int 
+	var lastIncludedTerm int
 
 	if d.Decode(&currentTerm) != nil || 
 	d.Decode(&voteFor) != nil || 
-	d.Decode(&logs) != nil{
+	d.Decode(&logs) != nil ||
+	d.Decode(&lastIncludedIndex) != nil ||
+	d.Decode(&lastIncludedTerm) != nil{
 		// there is error
 		log.Printf("labgob decode error")
 	}
@@ -152,9 +161,12 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.currentTerm = currentTerm
 	rf.voteFor = voteFor
 	rf.log = logs
+	rf.lastIncludedIndex = lastIncludedIndex
+	rf.lastIncludedTerm = lastIncludedTerm
 
 }
 type LogEntry struct {
+	Index   int 
 	Term    int
 	Command interface{}
 }
@@ -296,7 +308,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	e := labgob.NewEncoder(w)
 	if e.Encode(rf.currentTerm) != nil || 
 	e.Encode(rf.voteFor) != nil ||
-	e.Encode(rf.log) != nil {
+	e.Encode(rf.log) != nil ||
+	e.Encode(rf.lastIncludedIndex) != nil ||
+	e.Encode(rf.lastIncludedTerm) != nil{
 		log.Printf("labgob encode error")
 	}
 	data := w.Bytes()
@@ -309,8 +323,7 @@ type InstallSnapshotArgs struct{
 	LeaderID int
 	LastIncludedIndex int
 	LastIncludedTerm int
-	Offset int
-	data[] []byte
+	data []byte
 	Done bool
 }
 
@@ -321,6 +334,9 @@ type InstallSnapshotReply struct{
 
 func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnapshotReply){
 
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+
 		reply.Term = rf.currentTerm
 
 
@@ -329,35 +345,71 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 			return
 		}
 		// 2. Create new snapshot file if first chunk (offset is 0)
-		if args.Offset == 0{
 
-		}
 		// 3. Write data into snapshot file at given offset
 
 		// 4. Reply and wait for more data chunks if done is false
-
+	
 		// 5. Save snapshot file, discard any existing or partial snapshot
 		// with a smaller index
+		if rf.lastIncludedIndex < args.LastIncludedIndex{
+
+			rf.lastIncludedIndex = args.LastIncludedIndex
+			rf.lastIncludedTerm = args.LastIncludedTerm
+			rf.saveSnapShot(args)
+
+		}
+
 
 		// 6. If existing log entry has same index and term as snapshot’s
 		// last included entry, retain log entries following it and reply
+		for i:=len(rf.log)-1; i>=0 ; i--{
+
+			if rf.log[i].Index == args.LastIncludedIndex && rf.log[i].Term == args.LastIncludedTerm{
+
+				
+				rf.saveSnapShot(args)
+
+			}
+
+		}
 
 		// 7. Discard the entire log
+
+		
 
 		// 8. Reset state machine using snapshot contents (and load
 		// snapshot’s cluster configuration)
 }
 
-func (rf *Raft) sendInstallSnapshot(){
+func (rf *Raft) sendInstallSnapshot(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshotRPC", args, reply)
+	return ok
+}
 
-	
+func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.voteFor)
+	e.Encode(rf.log)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
+
+	data := w.Bytes()
+	rf.persister.SaveStateAndSnapshot(data, args.data)
+
+}
+
+func (rf *Raft) saveSnapShotAtIndex(index int){
 
 
 
 
 
 }
-
 
 
 //
