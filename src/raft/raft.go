@@ -471,7 +471,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	higherIndexCheck := true
 
 	if rf.getLogLen()>0{
-		lastLogEntry := rf.getLogAtIndex(len(rf.log) - 1)
+		lastLogEntry := rf.log[len(rf.log) - 1]
 		higherTermCheck = args.LastLogTerm > lastLogEntry.Term
 		higherIndexCheck = (args.LastLogTerm == lastLogEntry.Term) && (args.LastLogIndex >= rf.getLogLen()-1)
 	}
@@ -644,13 +644,13 @@ func (rf *Raft) updateCommitIndex(){
 	matches := make([]int, len(rf.peers))
 	copy(matches, rf.matchIndex)
 	
-	for i:=len(rf.log)-1 ; i>rf.commitIndex ; i-- {	
+	for i:=rf.getLogLen()-1 ; i>rf.commitIndex ; i-- {	
 			count := 0
 			for _, val := range matches{
-				if val >= rf.convert2ActualIndex(i){
+				if val >= i{
 					count++
-					if (count > len(matches)/2) && (rf.log[i].Term == rf.currentTerm){
-							rf.commitIndex = rf.convert2ActualIndex(i)
+					if (count > len(matches)/2) && (rf.getLogAtIndex(i).Term == rf.currentTerm){
+							rf.commitIndex = i
 							rf.applyMsgCond.Broadcast() // new commit so notify to send appy msg to tester 
 							return
 					}
