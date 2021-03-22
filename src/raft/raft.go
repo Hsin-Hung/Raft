@@ -222,7 +222,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
     // whose term matches prevLogTerm
-	if args.PrevLogIndex>=rf.getLogLen(){
+	if !rf.hasIndex(args.PrevLogIndex){
 
 		reply.ConflictIndex = rf.getLogLen()
 		reply.Success = false
@@ -252,7 +252,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	for i := range args.Entries{
 
-		if args.PrevLogIndex+1+i >= rf.getLogLen() || args.Entries[i].Term != rf.getLogAtIndex(args.PrevLogIndex+1+i).Term{
+		if !rf.hasIndex(args.PrevLogIndex+1+i) || args.Entries[i].Term != rf.getLogAtIndex(args.PrevLogIndex+1+i).Term{
 			rf.log = append(rf.log[:rf.convert2LogIndex(args.PrevLogIndex+1+i)], args.Entries[i:]...)
 			break
 		}
@@ -288,6 +288,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
+	log.Printf("cond install")
 	// Your code here (2D).
 
 	return true
@@ -300,19 +301,9 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.trimLogAtIndex(index)
-
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	if e.Encode(rf.currentTerm) != nil || 
-	e.Encode(rf.voteFor) != nil ||
-	e.Encode(rf.log) != nil ||
-	e.Encode(rf.lastIncludedIndex) != nil ||
-	e.Encode(rf.lastIncludedTerm) != nil{
-		log.Printf("labgob encode error")
-	}
-	data := w.Bytes()
-	rf.persister.SaveStateAndSnapshot(data, snapshot)
 
 }
 
@@ -332,16 +323,24 @@ type InstallSnapshotReply struct{
 
 func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnapshotReply){
 
+		log.Printf("install snapshot rpc")
+
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 
 		reply.Term = rf.currentTerm
 
-
 		// 1. Reply immediately if term < currentTerm
 		if args.Term < rf.currentTerm{
 			return
 		}
+
+		if args.Term > rf.currentTerm{
+			rf.currentTerm = args.Term
+			rf.convert2Follower()
+		}
+
+		rf.lastTimestamp = time.Now()
 		// 2. Create new snapshot file if first chunk (offset is 0)
 
 		// 3. Write data into snapshot file at given offset
@@ -350,17 +349,21 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 	
 		// 5. Save snapshot file, discard any existing or partial snapshot
 		// with a smaller index
+
+		if rf.lastIncludedIndex >= args.LastIncludedIndex{
+			return
+		}
+
 		if rf.hasIndex(args.LastIncludedIndex) && rf.getLogAtIndex(args.LastIncludedIndex).Term == args.LastIncludedTerm{
 
 			// 6. If existing log entry has same index and term as snapshot’s
 			// last included entry, retain log entries following it and reply
-			rf.trimLogAtIndex(rf.lastIncludedIndex)
+			rf.trimLogAtIndex(args.LastIncludedIndex)
 
 		}else{
 
 			// 7. Discard the entire log
 			rf.log = make([] LogEntry, 0)
-			
 
 		}
 
@@ -368,7 +371,6 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 		rf.lastIncludedTerm = args.LastIncludedTerm
 		rf.snapshot = args.Data
 
-		
 		// 8. Reset state machine using snapshot contents (and load
 		// snapshot’s cluster configuration)
 		rf.saveSnapShot(args)
@@ -377,7 +379,7 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 		
 }
 
-func (rf *Raft) sendInstallSnapshot(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshotRPC", args, reply)
 	return ok
 }
@@ -385,14 +387,14 @@ func (rf *Raft) sendInstallSnapshot(server int, args *AppendEntriesArgs, reply *
 func (rf *Raft) sendApplySnapshot(){
 
 	newApplyMsg := ApplyMsg{
-	
+		CommandValid  : false,
 		SnapshotValid : true,
 		Snapshot      : rf.snapshot,
 		SnapshotTerm  : rf.lastIncludedTerm,
 		SnapshotIndex : rf.lastIncludedIndex,
 
 	}
-
+	rf.lastApplied = rf.lastIncludedIndex
 	rf.applyCh <- newApplyMsg
 
 }
@@ -413,12 +415,16 @@ func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
 
 }
 
-// trim the log at and include the given index 
+// trim the log at and include the given index [0 1 2] [0 1 2 3 4 5 6]
 func (rf *Raft) trimLogAtIndex(index int){
+		
+	rf.lastIncludedIndex = index
+	rf.lastIncludedTerm = rf.getLogAtIndex(index).Term
 
 	if rf.hasIndex(index){
-
-		rf.log = rf.log[rf.convert2LogIndex(index)+1:]
+		log := make([] LogEntry, rf.getLogLen() - index - 1)
+		log = append(log, rf.log[rf.convert2LogIndex(index)+1:]...)
+		rf.log = log
 		
 	}else{
 
@@ -701,11 +707,15 @@ func (rf *Raft) applyCommittedEntries(){
 		if lastApplied < commitIndex{
 
 			for i:=lastApplied + 1;i<= commitIndex ; i++ {
+
+				rf.mu.Lock()
+				command := log[rf.convert2LogIndex(i)].Command
+				rf.mu.Unlock()
 	
 				newApplyMsg := ApplyMsg{
 	
 					CommandValid: true,
-					Command: log[rf.convert2LogIndex(i)].Command,
+					Command: command,
 					CommandIndex: i,
 
 				}
@@ -789,6 +799,59 @@ func (rf *Raft) startLeaderHeartBeats() {
 // leader's helper function to send heart beats to peers
 func (rf *Raft) sendHeartBeat(server int){
 
+	rf.mu.Lock()
+	prevIndex := rf.nextIndex[server]-1
+	lastIncludedIndex := rf.lastIncludedIndex
+	rf.mu.Unlock()
+
+	if lastIncludedIndex > prevIndex{
+
+		rf.mu.Lock()
+
+		installSnapshotArgs := InstallSnapshotArgs{
+
+			Term : rf.currentTerm,
+			LeaderID : rf.me,
+			LastIncludedIndex : rf.lastIncludedIndex,
+			LastIncludedTerm : rf.lastIncludedTerm,
+			Data : rf.snapshot,
+
+		}
+		rf.mu.Unlock()
+
+		installSnapshotReply := InstallSnapshotReply{}
+		ok := rf.sendInstallSnapshot(server, &installSnapshotArgs, &installSnapshotReply)
+
+
+		if ok{
+
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			defer rf.persist()
+
+			if installSnapshotArgs.Term != rf.currentTerm{ 
+				return
+			}
+
+			if rf.currentTerm < installSnapshotReply.Term {
+				rf.currentTerm = installSnapshotReply.Term
+				rf.convert2Follower()
+				return
+			}
+
+			if installSnapshotReply.Term == rf.currentTerm{
+
+				rf.nextIndex[server] = installSnapshotArgs.LastIncludedIndex + 1
+				rf.matchIndex[server] = installSnapshotArgs.LastIncludedIndex
+				rf.updateCommitIndex()
+			}
+
+		}
+
+		return
+
+	}
+
 	args := AppendEntriesArgs{}
 	reply := AppendEntriesReply{}	
 	rf.mu.Lock()
@@ -797,11 +860,11 @@ func (rf *Raft) sendHeartBeat(server int){
 	args.LeaderCommit = rf.commitIndex   
 	args.PrevLogIndex = rf.nextIndex[server]-1
 
-	if args.PrevLogIndex>=0{
+	if rf.hasIndex(args.PrevLogIndex){
 		args.PrevLogTerm = rf.getLogAtIndex(args.PrevLogIndex).Term
 	}
 	// If last log index ≥ nextIndex for a follower
-	if rf.getLogLen() > rf.nextIndex[server]{
+	if rf.hasIndex(rf.nextIndex[server]){
 		newEntries := make([] LogEntry, rf.getLogLen()-rf.nextIndex[server])
 		copy(newEntries, rf.log[rf.convert2LogIndex(rf.nextIndex[server]):])
 		args.Entries = newEntries
