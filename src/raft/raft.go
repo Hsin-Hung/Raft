@@ -84,6 +84,7 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
+	snapshot []byte
 	lastIncludedIndex int
 	lastIncludedTerm int 
 
@@ -349,29 +350,29 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 	
 		// 5. Save snapshot file, discard any existing or partial snapshot
 		// with a smaller index
-		if args.LastIncludedIndex < rf.getLogLen() && rf.getLogAtIndex(args.LastIncludedIndex).Term == args.LastIncludedTerm{
+		if rf.hasIndex(args.LastIncludedIndex) && rf.getLogAtIndex(args.LastIncludedIndex).Term == args.LastIncludedTerm{
 
 			// 6. If existing log entry has same index and term as snapshot’s
 			// last included entry, retain log entries following it and reply
-			rf.lastIncludedIndex = args.LastIncludedIndex
-			rf.lastIncludedTerm = args.LastIncludedTerm
 			rf.trimLogAtIndex(rf.lastIncludedIndex)
-			rf.saveSnapShot(args)
 
 		}else{
 
 			// 7. Discard the entire log
-			rf.lastIncludedIndex = args.LastIncludedIndex
-			rf.lastIncludedTerm = args.LastIncludedTerm
 			rf.log = make([] LogEntry, 0)
-			rf.saveSnapShot(args)
+			
 
 		}
 
+		rf.lastIncludedIndex = args.LastIncludedIndex
+		rf.lastIncludedTerm = args.LastIncludedTerm
+		rf.snapshot = args.Data
 
-
+		
 		// 8. Reset state machine using snapshot contents (and load
 		// snapshot’s cluster configuration)
+		rf.saveSnapShot(args)
+		rf.sendApplySnapshot()
 
 		
 }
@@ -379,6 +380,21 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 func (rf *Raft) sendInstallSnapshot(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshotRPC", args, reply)
 	return ok
+}
+
+func (rf *Raft) sendApplySnapshot(){
+
+	newApplyMsg := ApplyMsg{
+	
+		SnapshotValid : true,
+		Snapshot      : rf.snapshot,
+		SnapshotTerm  : rf.lastIncludedTerm,
+		SnapshotIndex : rf.lastIncludedIndex,
+
+	}
+
+	rf.applyCh <- newApplyMsg
+
 }
 
 func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
@@ -662,6 +678,14 @@ func (rf *Raft) updateCommitIndex(){
 }
 
 // apply commit entries by sending them to testers through applymsg channel 
+//
+//
+//	SnapshotValid bool
+//	Snapshot      []byte
+//	SnapshotTerm  int
+//	SnapshotIndex int
+//
+//
 func (rf *Raft) applyCommittedEntries(){
 
 	for !rf.killed(){
