@@ -221,20 +221,20 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
     // whose term matches prevLogTerm
-	if args.PrevLogIndex>=len(rf.log){
+	if args.PrevLogIndex>=rf.getLogLen(){
 
-		reply.ConflictIndex = len(rf.log)
+		reply.ConflictIndex = rf.getLogLen()
 		reply.Success = false
 		return
 
-	}else if (args.PrevLogIndex>=0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm){
+	}else if (args.PrevLogIndex>=0 && rf.getLogAtIndex(args.PrevLogIndex).Term != args.PrevLogTerm){
 
-		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+		reply.ConflictTerm = rf.getLogAtIndex(args.PrevLogIndex).Term
 
 		for i, val := range rf.log{
 
 			if val.Term == reply.ConflictTerm{
-				reply.ConflictIndex = i 
+				reply.ConflictIndex = rf.convert2ActualIndex(i)
 				break
 			}
 
@@ -251,8 +251,8 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	for i := range args.Entries{
 
-		if args.PrevLogIndex+1+i >= len(rf.log) || args.Entries[i].Term != rf.log[args.PrevLogIndex+1+i].Term{
-			rf.log = append(rf.log[:args.PrevLogIndex+1+i], args.Entries[i:]...)
+		if args.PrevLogIndex+1+i >= rf.getLogLen() || args.Entries[i].Term != rf.getLogAtIndex(args.PrevLogIndex+1+i).Term{
+			rf.log = append(rf.log[:rf.convert2LogIndex(args.PrevLogIndex+1+i)], args.Entries[i:]...)
 			break
 		}
 
@@ -263,7 +263,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex{
 
-		lastEntryIndex := len(rf.log)-1
+		lastEntryIndex := rf.getLogLen()-1
 		rf.commitIndex = min(args.LeaderCommit, lastEntryIndex)
 		rf.applyMsgCond.Broadcast()
 
@@ -1033,6 +1033,13 @@ func (rf *Raft) convert2LogIndex(index int) int {
 	return index - rf.lastIncludedIndex - 1
 
 }
+
+func (rf *Raft) convert2ActualIndex(index int) int{
+
+	return rf.lastIncludedIndex + index + 1
+
+}
+
 func min(first int, second int) int{
 
 	if first > second{
