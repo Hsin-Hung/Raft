@@ -166,7 +166,6 @@ func (rf *Raft) readPersist(data []byte) {
 
 }
 type LogEntry struct {
-	Index   int 
 	Term    int
 	Command interface{}
 }
@@ -323,7 +322,7 @@ type InstallSnapshotArgs struct{
 	LeaderID int
 	LastIncludedIndex int
 	LastIncludedTerm int
-	data []byte
+	Data []byte
 	Done bool
 }
 
@@ -352,34 +351,31 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 	
 		// 5. Save snapshot file, discard any existing or partial snapshot
 		// with a smaller index
-		if rf.lastIncludedIndex < args.LastIncludedIndex{
+		if args.LastIncludedIndex < rf.getLogLen() && rf.getLogAtIndex(args.LastIncludedIndex).Term == args.LastIncludedTerm{
 
+			// 6. If existing log entry has same index and term as snapshot’s
+			// last included entry, retain log entries following it and reply
 			rf.lastIncludedIndex = args.LastIncludedIndex
 			rf.lastIncludedTerm = args.LastIncludedTerm
+			rf.trimLogAtIndex(rf.lastIncludedIndex)
+			rf.saveSnapShot(args)
+
+		}else{
+
+			// 7. Discard the entire log
+			rf.lastIncludedIndex = args.LastIncludedIndex
+			rf.lastIncludedTerm = args.LastIncludedTerm
+			rf.log = make([] LogEntry, 0)
 			rf.saveSnapShot(args)
 
 		}
 
 
-		// 6. If existing log entry has same index and term as snapshot’s
-		// last included entry, retain log entries following it and reply
-		for i:=len(rf.log)-1; i>=0 ; i--{
-
-			if rf.log[i].Index == args.LastIncludedIndex && rf.log[i].Term == args.LastIncludedTerm{
-
-				
-				rf.saveSnapShot(args)
-
-			}
-
-		}
-
-		// 7. Discard the entire log
-
-		
 
 		// 8. Reset state machine using snapshot contents (and load
 		// snapshot’s cluster configuration)
+
+		
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -399,15 +395,23 @@ func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
 	e.Encode(rf.lastIncludedTerm)
 
 	data := w.Bytes()
-	rf.persister.SaveStateAndSnapshot(data, args.data)
+	rf.persister.SaveStateAndSnapshot(data, args.Data)
 
 }
 
-func (rf *Raft) saveSnapShotAtIndex(index int){
+// trim the log at and include the given index 
+func (rf *Raft) trimLogAtIndex(index int){
 
+	if rf.hasIndex(index){
 
+		rf.log = rf.log[rf.convert2LogIndex(index)+1:]
+		
+	}else{
 
+		rf.log = make([] LogEntry, 0)
 
+	}
+	
 
 }
 
@@ -615,6 +619,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	
 	rf.nextIndex = make([] int, len(peers))
 	rf.matchIndex = make([] int, len(peers))
+
+	rf.lastIncludedIndex = -1
+	rf.lastIncludedTerm = 0
+
 	rf.electionTimeoutDur = rand.Intn(250) + 400
 	rf.lastTimestamp = time.Now()
 
@@ -987,6 +995,44 @@ func (rf *Raft) leaderStateInit(){
 
 }
 
+// check if the log has the given index
+func (rf *Raft) hasIndex(index int) bool{
+
+	return index > rf.lastIncludedIndex &&  len(rf.log) > (index - rf.lastIncludedIndex - 1)
+
+}
+// [0 1 2 3] [0 1 2 3 4 5 6 7]
+
+//get the length of the log 
+func (rf *Raft) getLogLen() int{
+
+	return rf.lastIncludedIndex + len(rf.log) + 1
+
+}
+
+// get the log entry at a given index 
+func (rf *Raft) getLogAtIndex(index int) LogEntry{
+
+	if rf.hasIndex(index){
+
+		return rf.log[index - rf.lastIncludedIndex - 1]
+
+	}
+
+	panic("no such index")
+
+}
+
+func (rf *Raft) getLastLog() LogEntry{
+
+	return rf.getLogAtIndex(rf.getLogLen()-1)
+}
+
+func (rf *Raft) convert2LogIndex(index int) int {
+
+	return index - rf.lastIncludedIndex - 1
+
+}
 func min(first int, second int) int{
 
 	if first > second{
