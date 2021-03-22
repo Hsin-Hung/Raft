@@ -556,7 +556,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term: rf.currentTerm,
 			Command: command,
 		}
-		index = len(rf.log)
+		index = rf.getLogLen()
 		// If command received from client: append entry to local log
 		rf.log = append(rf.log, newEntry)
 		rf.matchIndex[rf.me] = index
@@ -647,10 +647,10 @@ func (rf *Raft) updateCommitIndex(){
 	for i:=len(rf.log)-1 ; i>rf.commitIndex ; i-- {	
 			count := 0
 			for _, val := range matches{
-				if val >= i{
+				if val >= rf.convert2ActualIndex(i){
 					count++
 					if (count > len(matches)/2) && (rf.log[i].Term == rf.currentTerm){
-							rf.commitIndex = i
+							rf.commitIndex = rf.convert2ActualIndex(i)
 							rf.applyMsgCond.Broadcast() // new commit so notify to send appy msg to tester 
 							return
 					}
@@ -681,7 +681,7 @@ func (rf *Raft) applyCommittedEntries(){
 				newApplyMsg := ApplyMsg{
 	
 					CommandValid: true,
-					Command: log[i].Command,
+					Command: log[rf.convert2LogIndex(i)].Command,
 					CommandIndex: i,
 
 				}
@@ -774,12 +774,12 @@ func (rf *Raft) sendHeartBeat(server int){
 	args.PrevLogIndex = rf.nextIndex[server]-1
 
 	if args.PrevLogIndex>=0{
-		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+		args.PrevLogTerm = rf.getLogAtIndex(args.PrevLogIndex).Term
 	}
 	// If last log index ≥ nextIndex for a follower
-	if len(rf.log) > rf.nextIndex[server]{
-		newEntries := make([] LogEntry, len(rf.log)-rf.nextIndex[server])
-		copy(newEntries, rf.log[rf.nextIndex[server]:])
+	if rf.getLogLen() > rf.nextIndex[server]{
+		newEntries := make([] LogEntry, rf.getLogLen()-rf.nextIndex[server])
+		copy(newEntries, rf.log[rf.convert2LogIndex(rf.nextIndex[server]):])
 		args.Entries = newEntries
 	}
 	rf.mu.Unlock()
@@ -821,7 +821,7 @@ func (rf *Raft) sendHeartBeat(server int){
 
 				if rf.log[i].Term == reply.ConflictTerm{
 
-					rf.nextIndex[server] = min(i, reply.ConflictIndex) 
+					rf.nextIndex[server] = min(rf.convert2ActualIndex(i), reply.ConflictIndex) 
 					found = true
 					break
 				}
