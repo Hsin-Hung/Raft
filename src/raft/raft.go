@@ -299,9 +299,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
-	trimmedLog := make([] LogEntry, len(rf.log)-index - 1)
-	trimmedLog = append(trimmedLog, rf.log[index+1:]...)
-	rf.log = trimmedLog
+	rf.trimLogAtIndex(index)
 
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
@@ -472,10 +470,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	higherTermCheck := true
 	higherIndexCheck := true
 
-	if len(rf.log)>0{
-		lastLogEntry := rf.log[len(rf.log) - 1]
+	if rf.getLogLen()>0{
+		lastLogEntry := rf.getLogAtIndex(len(rf.log) - 1)
 		higherTermCheck = args.LastLogTerm > lastLogEntry.Term
-		higherIndexCheck = (args.LastLogTerm == lastLogEntry.Term) && (args.LastLogIndex >= len(rf.log)-1)
+		higherIndexCheck = (args.LastLogTerm == lastLogEntry.Term) && (args.LastLogIndex >= rf.getLogLen()-1)
 	}
 
     // 2. If votedFor is null or candidateId, and candidate’s log is at
