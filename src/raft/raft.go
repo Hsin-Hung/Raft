@@ -900,9 +900,9 @@ func (rf *Raft) setUpSendRequestVote(server int) int {
 	reply := RequestVoteReply{}
 	rf.mu.Lock()
 	args.CandidateID = rf.me
-	args.LastLogIndex = len(rf.log)-1
+	args.LastLogIndex = rf.getLogLen()-1
 	if len(rf.log)>0{
-		args.LastLogTerm = rf.log[args.LastLogIndex].Term
+		args.LastLogTerm = rf.getLogAtIndex(args.LastLogIndex).Term
 	}
 	args.Term = rf.currentTerm
 	rf.mu.Unlock()
@@ -977,13 +977,13 @@ func (rf *Raft) convert2Leader(){
 //leader set up next index and match index for all servers 
 func (rf *Raft) leaderStateInit(){
 
-	rf.nextIndex[rf.me] = len(rf.log)
-	rf.matchIndex[rf.me] = len(rf.log)-1
+	rf.nextIndex[rf.me] = rf.getLogLen()
+	rf.matchIndex[rf.me] = rf.getLogLen()-1
 
 	for i := range rf.peers{
 
 		if i!=rf.me{
-			rf.nextIndex[i] = len(rf.log)
+			rf.nextIndex[i] = rf.getLogLen()
 			rf.matchIndex[i] = 0
 		}
 
