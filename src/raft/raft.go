@@ -84,13 +84,14 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
-	snapshot []byte
 	lastIncludedIndex int
 	lastIncludedTerm int 
 
 	state int      
 
 	applyMsgCond *sync.Cond		// notify for applying entries to state machine
+	
+	snapshotCh chan SnapshotRequest
 
 	electionTimeoutDur int				// election time out duration  
 
@@ -222,7 +223,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
     // whose term matches prevLogTerm
-	if !rf.hasIndex(args.PrevLogIndex){
+	if args.PrevLogIndex >= rf.getLogLen(){
 
 		reply.ConflictIndex = rf.getLogLen()
 		reply.Success = false
@@ -288,10 +289,30 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
-	log.Printf("cond install")
+	if rf.lastIncludedIndex<lastIncludedIndex{
+
+		rf.trimLogAtIndex(lastIncludedIndex)
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
+
+		w := new(bytes.Buffer)
+		e := labgob.NewEncoder(w)
+	
+		e.Encode(rf.currentTerm)
+		e.Encode(rf.voteFor)
+		e.Encode(rf.log)
+		e.Encode(lastIncludedIndex)
+		e.Encode(lastIncludedTerm)
+	
+		data := w.Bytes()
+		rf.persister.SaveStateAndSnapshot(data, snapshot)
+
+		return true
+
+	}
 	// Your code here (2D).
 
-	return true
+	return false
 }
 
 // the service says it has created a snapshot that has
@@ -300,10 +321,46 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+	log.Println("start snapshot")
+	snapshotReq := SnapshotRequest{
+		index : index,
+		snapshot : snapshot,
+	}
+	
+	rf.snapshotCh <- snapshotReq
+	log.Println("end snapshot")
+}
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.trimLogAtIndex(index)
+type SnapshotRequest struct {
+	index int
+	snapshot [] byte
+}
+
+func (rf *Raft) snapshotRoutine(){
+
+	for {
+
+		select{
+
+
+			case snapshotReq := <- rf.snapshotCh:
+			{
+				rf.mu.Lock()
+				newLastIncludedTerm := rf.getLogAtIndex(snapshotReq.index).Term
+				rf.trimLogAtIndex(snapshotReq.index)
+				rf.lastIncludedIndex = snapshotReq.index
+				rf.lastIncludedTerm = newLastIncludedTerm
+				rf.mu.Unlock()
+			}
+
+			default:
+				time.Sleep(time.Millisecond * 10)
+
+		}
+
+
+	}
+
 
 }
 
@@ -327,6 +384,7 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+		defer rf.persist()
 
 		reply.Term = rf.currentTerm
 
@@ -354,7 +412,7 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 			return
 		}
 
-		if rf.hasIndex(args.LastIncludedIndex) && rf.getLogAtIndex(args.LastIncludedIndex).Term == args.LastIncludedTerm{
+		if args.LastIncludedIndex < rf.getLogLen() && rf.getLogAtIndex(args.LastIncludedIndex).Term == args.LastIncludedTerm{
 
 			// 6. If existing log entry has same index and term as snapshot’s
 			// last included entry, retain log entries following it and reply
@@ -369,7 +427,7 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
-		rf.snapshot = args.Data
+		
 
 		// 8. Reset state machine using snapshot contents (and load
 		// snapshot’s cluster configuration)
@@ -389,7 +447,7 @@ func (rf *Raft) sendApplySnapshot(){
 	newApplyMsg := ApplyMsg{
 		CommandValid  : false,
 		SnapshotValid : true,
-		Snapshot      : rf.snapshot,
+		Snapshot      : rf.persister.ReadSnapshot(),
 		SnapshotTerm  : rf.lastIncludedTerm,
 		SnapshotIndex : rf.lastIncludedIndex,
 
@@ -417,20 +475,24 @@ func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
 
 // trim the log at and include the given index [0 1 2] [0 1 2 3 4 5 6]
 func (rf *Raft) trimLogAtIndex(index int){
-		
-	rf.lastIncludedIndex = index
-	rf.lastIncludedTerm = rf.getLogAtIndex(index).Term
+
+	//log.Printf("index %v", index)
+	//log.Printf("BEFORE TRIM server %v: lastincludedindex: %v, lastincludedterm: %v, log: %v", rf.me, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log)
 
 	if rf.hasIndex(index){
+
 		log := make([] LogEntry, rf.getLogLen() - index - 1)
-		log = append(log, rf.log[rf.convert2LogIndex(index)+1:]...)
+		copy(log, rf.log[rf.convert2LogIndex(index)+1:])
 		rf.log = log
+
 		
 	}else{
 
 		rf.log = make([] LogEntry, 0)
 
 	}
+
+	//log.Printf("AFTER TRIM server %v: lastincludedindex: %v, lastincludedterm: %v, log: %v", rf.me, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log)
 	
 
 }
@@ -648,11 +710,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyMsgCond = sync.NewCond(&rf.mu)
 
+	rf.snapshotCh = make(chan SnapshotRequest, 0)
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	go rf.startMainRoutine()
 	go rf.applyCommittedEntries()
+	go rf.snapshotRoutine()
 
 	return rf
 }
@@ -814,7 +879,7 @@ func (rf *Raft) sendHeartBeat(server int){
 			LeaderID : rf.me,
 			LastIncludedIndex : rf.lastIncludedIndex,
 			LastIncludedTerm : rf.lastIncludedTerm,
-			Data : rf.snapshot,
+			Data : rf.persister.ReadSnapshot(),
 
 		}
 		rf.mu.Unlock()
