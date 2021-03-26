@@ -171,6 +171,7 @@ func (rf *Raft) readPersist(data []byte) {
 type LogEntry struct {
 	Term    int
 	Command interface{}
+	CommandValid bool
 }
 
 type AppendEntriesArgs struct {
@@ -344,20 +345,21 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	snapshotReq := SnapshotRequest{
-		index : index,
-		snapshot : snapshot,
+		Index : index,
+		Snapshot : snapshot,
 	}
 	
 	rf.snapshotCh <- snapshotReq
 }
 
 type SnapshotRequest struct {
-	index int
-	snapshot [] byte
+	Index int
+	Snapshot [] byte
 }
 
 func (rf *Raft) snapshotRoutine(){
 
+	outer:
 	for {
 
 		select{
@@ -367,20 +369,20 @@ func (rf *Raft) snapshotRoutine(){
 			{
 				rf.mu.Lock()
 				DPrintf("%v[%v] get SNAPSHOT",rf.getStateStr(),rf.me)
-				if snapshotReq.index <= rf.lastIncludedIndex{
+				if snapshotReq.Index <= rf.lastIncludedIndex{
 					rf.mu.Unlock()
-					continue 
+					continue outer
 				}
-				entry, success := rf.getLogAtIndex(snapshotReq.index)
+				entry, success := rf.getLogAtIndex(snapshotReq.Index)
 				if !success{
 					rf.mu.Unlock()
-					continue 
+					continue outer
 				}
-				newLastIncludedTerm := entry.Term
-				rf.trimLogAtIndex(snapshotReq.index)
-				rf.lastIncludedIndex = snapshotReq.index
-				rf.lastIncludedTerm = newLastIncludedTerm
 
+				newLastIncludedTerm := entry.Term
+				rf.trimLogAtIndex(snapshotReq.Index)
+				rf.lastIncludedIndex = snapshotReq.Index
+				rf.lastIncludedTerm = newLastIncludedTerm
 				
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
@@ -392,7 +394,7 @@ func (rf *Raft) snapshotRoutine(){
 				e.Encode(rf.lastIncludedTerm)
 			
 				data := w.Bytes()
-				rf.persister.SaveStateAndSnapshot(data, snapshotReq.snapshot)
+				rf.persister.SaveStateAndSnapshot(data, snapshotReq.Snapshot)
 				rf.mu.Unlock()
 			}
 
@@ -472,11 +474,12 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
+		rf.commitIndex = rf.lastIncludedIndex
 
 		// 8. Reset state machine using snapshot contents (and load
 		// snapshot’s cluster configuration)
 		rf.saveSnapShot(args)
-		rf.applySnapshotCond.Broadcast()
+		rf.applyMsgCond.Broadcast()
 
 		
 }
@@ -486,33 +489,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 	return ok
 }
 
-func (rf *Raft) sendApplySnapshot(){
-
-
-	for !rf.killed(){
-
-		rf.mu.Lock()
-		rf.applySnapshotCond.Wait()
-
-	newApplyMsg := ApplyMsg{
-		CommandValid  : false,
-		SnapshotValid : true,
-		Snapshot      : rf.persister.ReadSnapshot(),
-		SnapshotTerm  : rf.lastIncludedTerm,
-		SnapshotIndex : rf.lastIncludedIndex,
-
-	}
-	rf.lastApplied = rf.lastIncludedIndex
-	rf.applyCh <- newApplyMsg
-	rf.mu.Unlock()
-	
-
-
-	}
-
-
-
-}
+//  
 
 func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
 
@@ -676,8 +653,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
-
+	
 	index := -1
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
@@ -690,12 +666,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		newEntry := LogEntry{
 			Term: rf.currentTerm,
 			Command: command,
+			CommandValid: true,
 		}
 		index = rf.getLogLen()
 		// If command received from client: append entry to local log
 		rf.log = append(rf.log, newEntry)
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me] = index + 1
+		rf.persist()
 	}
 
 	return index, term, isLeader
@@ -754,7 +732,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([] int, len(peers))
 
 	rf.lastIncludedIndex = -1
-	rf.lastIncludedTerm = 0
+	rf.lastIncludedTerm = -1
 
 	rf.electionTimeoutDur = rand.Intn(250) + 400
 	rf.lastTimestamp = time.Now()
@@ -770,7 +748,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.snapshotRoutine()
 	go rf.startMainRoutine()
 	go rf.applyCommittedEntries()
-	go rf.sendApplySnapshot()
+	//go rf.sendApplySnapshot()
 	
 
 	return rf
@@ -812,33 +790,53 @@ func (rf *Raft) updateCommitIndex(){
 //
 //
 func (rf *Raft) applyCommittedEntries(){
-
+	outer:
 	for !rf.killed(){
 
 		rf.mu.Lock()
-		rf.applyMsgCond.Wait()
-		// log2 := make([]LogEntry, len(rf.log))
-		// copy(log2, rf.log)
-		
+
+		for rf.lastApplied >= rf.commitIndex{
+			rf.applyMsgCond.Wait()
+		}
+
+		if rf.lastApplied < rf.lastIncludedIndex{
+
+			newApplyMsg := ApplyMsg{
+				CommandValid  : false,
+				SnapshotValid : true,
+				Snapshot      : rf.persister.ReadSnapshot(),
+				SnapshotTerm  : rf.lastIncludedTerm,
+				SnapshotIndex : rf.lastIncludedIndex,
+
+			}
+			rf.lastApplied = rf.lastIncludedIndex
+			rf.mu.Unlock()
+			rf.applyCh <- newApplyMsg
+			
+			continue outer
+		}
+
 		
 		if rf.lastApplied < rf.commitIndex{
 
 			for i:=rf.lastApplied + 1;i<= rf.commitIndex ; i++ {
 
 				entry, success := rf.getLogAtIndex(i)
-				if !success {
-					rf.mu.Unlock()
+				if !success || i == rf.lastIncludedIndex{
 					continue
 				}
+				
+
 				newApplyMsg := ApplyMsg{
 	
-					CommandValid: true,
+					CommandValid: entry.CommandValid,
 					Command: entry.Command,
 					CommandIndex: i,
 
 				}
-				
+				rf.mu.Unlock()
 				rf.applyCh <- newApplyMsg
+				rf.mu.Lock()
 				rf.lastApplied = i
 
 			}
