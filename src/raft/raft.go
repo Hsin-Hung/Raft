@@ -223,7 +223,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
     // whose term matches prevLogTerm
-	if args.PrevLogIndex >= rf.getLogLen(){
+	if args.PrevLogIndex > rf.getLastIndex(){
 
 		reply.ConflictIndex = rf.getLogLen()
 		reply.Success = false
@@ -266,7 +266,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex{
 
-		lastEntryIndex := rf.getLogLen()-1
+		lastEntryIndex := rf.getLastIndex()
 		rf.commitIndex = min(args.LeaderCommit, lastEntryIndex)
 		rf.applyMsgCond.Broadcast()
 
@@ -290,6 +290,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if rf.lastIncludedIndex<lastIncludedIndex{
 
@@ -349,6 +351,9 @@ func (rf *Raft) snapshotRoutine(){
 			case snapshotReq := <- rf.snapshotCh:
 			{
 				rf.mu.Lock()
+				if snapshotReq.index <= rf.lastIncludedIndex{
+					continue 
+				}
 				//log.Printf("index: %v", snapshotReq.index)
 				//log.Printf("BEFORE TRIM server %v: lastincludedindex: %v, lastincludedterm: %v, log: %v", rf.me, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log)
 				entry, success := rf.getLogAtIndex(snapshotReq.index)
@@ -450,7 +455,6 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
-		rf.commitIndex = args.LastIncludedIndex
 
 		// 8. Reset state machine using snapshot contents (and load
 		// snapshot’s cluster configuration)
@@ -467,8 +471,6 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 
 func (rf *Raft) sendApplySnapshot(){
 
-	if rf.lastApplied < rf.lastIncludedIndex{
-
 	newApplyMsg := ApplyMsg{
 		CommandValid  : false,
 		SnapshotValid : true,
@@ -480,7 +482,7 @@ func (rf *Raft) sendApplySnapshot(){
 	rf.lastApplied = rf.lastIncludedIndex
 	rf.applyCh <- newApplyMsg
 
-	}
+	
 
 
 }
@@ -509,7 +511,7 @@ func (rf *Raft) trimLogAtIndex(index int){
 
 	if rf.hasIndex(index){
 
-		log := make([] LogEntry, rf.getLogLen() - index - 1)
+		log := make([] LogEntry, rf.getLastIndex() - index)
 		copy(log, rf.log[rf.convert2LogIndex(index)+1:])
 		rf.log = log
 
@@ -581,10 +583,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	higherTermCheck := true
 	higherIndexCheck := true
 
-	if rf.getLogLen()>0{
-		lastLogEntry := rf.log[len(rf.log) - 1]
-		higherTermCheck = args.LastLogTerm > lastLogEntry.Term
-		higherIndexCheck = (args.LastLogTerm == lastLogEntry.Term) && (args.LastLogIndex >= rf.getLogLen()-1)
+	if len(rf.log)>0{
+		higherTermCheck = args.LastLogTerm > rf.getLastTerm()
+		higherIndexCheck = (args.LastLogTerm == rf.getLastTerm()) && (args.LastLogIndex >= rf.getLastIndex())
 	}
 
     // 2. If votedFor is null or candidateId, and candidate’s log is at
@@ -742,9 +743,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	go rf.snapshotRoutine()
 	go rf.startMainRoutine()
 	go rf.applyCommittedEntries()
-	go rf.snapshotRoutine()
+	
 
 	return rf
 }
@@ -758,7 +760,7 @@ func (rf *Raft) updateCommitIndex(){
 	matches := make([]int, len(rf.peers))
 	copy(matches, rf.matchIndex)
 	
-	for i:=rf.getLogLen()-1 ; i>rf.commitIndex ; i-- {	
+	for i:=rf.getLastIndex() ; i>rf.commitIndex ; i-- {	
 			count := 0
 			for _, val := range matches{
 				if val >= i{
@@ -812,7 +814,7 @@ func (rf *Raft) applyCommittedEntries(){
 
 				}
 				
-				rf.tempPrint(newApplyMsg)
+				//rf.tempPrint(newApplyMsg)
 				rf.applyCh <- newApplyMsg
 				rf.lastApplied = i
 
@@ -957,6 +959,8 @@ func (rf *Raft) sendHeartBeat(server int){
 
 	if entry, success := rf.getLogAtIndex(args.PrevLogIndex); success{
 		args.PrevLogTerm = entry.Term
+	}else{
+		args.PrevLogTerm = rf.lastIncludedTerm
 	}
 	// If last log index ≥ nextIndex for a follower
 	if rf.hasIndex(rf.nextIndex[server]){
@@ -1083,14 +1087,8 @@ func (rf *Raft) setUpSendRequestVote(server int) int {
 	reply := RequestVoteReply{}
 	rf.mu.Lock()
 	args.CandidateID = rf.me
-	args.LastLogIndex = rf.getLogLen()-1
-
-	if  entry, success := rf.getLogAtIndex(args.LastLogIndex); success{
-
-		args.LastLogTerm = entry.Term
-		
-	}    
-	
+	args.LastLogIndex = rf.getLastIndex()
+	args.LastLogTerm = rf.getLastTerm()  
 	args.Term = rf.currentTerm
 	rf.mu.Unlock()
 	ok := rf.sendRequestVote(server, &args, &reply)
@@ -1196,6 +1194,20 @@ func (rf *Raft) getLogLen() int{
 
 }
 
+func (rf *Raft) getLastIndex() int{
+	return rf.getLogLen()-1
+}
+
+
+func (rf *Raft) getLastTerm() int{
+
+	if len(rf.log)>0{
+		return rf.getLastLog().Term
+	}
+	return rf.lastIncludedTerm
+
+}
+
 // get the log entry at a given index 
 func (rf *Raft) getLogAtIndex(index int) (LogEntry, bool){
 
@@ -1211,15 +1223,15 @@ func (rf *Raft) getLogAtIndex(index int) (LogEntry, bool){
 
 func (rf *Raft) getLastLog() LogEntry{
 
-	entry, success := rf.getLogAtIndex(rf.getLogLen()-1)
-
-	if success{
-		return entry
+	if len(rf.log)>0{
+		return rf.log[len(rf.log)-1]
 	}else{
 		return LogEntry{}
 	}
  
 }
+
+
 
 func (rf *Raft) convert2LogIndex(index int) int {
 
