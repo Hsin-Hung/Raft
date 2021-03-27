@@ -282,7 +282,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendEntriesRPC(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntryHandler", args, reply)
 	return ok
 
@@ -310,32 +310,39 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		Snapshot : snapshot,
 	}
 	
-	go rf.snapshotRoutine(snapshotReq)
+	rf.snapshotCh <- snapshotReq
 }
 
 type SnapshotRequest struct {
 	Index int
 	Snapshot [] byte
 }
+func (rf *Raft) snapshotRoutine(){
 
-func (rf *Raft) snapshotRoutine(snapshotReq SnapshotRequest){
+	outer:
+	for {
+
+		select{
 
 
+			case snapshotReq := <- rf.snapshotCh:
+			{
 				rf.mu.Lock()
-				defer rf.mu.Unlock()
-
 				DPrintf("%v[%v] get SNAPSHOT",rf.getStateStr(),rf.me)
 				if snapshotReq.Index <= rf.lastIncludedIndex{
-					return
+					rf.mu.Unlock()
+					continue outer
 				}
 				entry, success := rf.getLogAtIndex(snapshotReq.Index)
 				if !success{
-					return
+					rf.mu.Unlock()
+					continue outer
 				}
 
+				newLastIncludedTerm := entry.Term
 				rf.trimLogAtIndex(snapshotReq.Index)
 				rf.lastIncludedIndex = snapshotReq.Index
-				rf.lastIncludedTerm = entry.Term
+				rf.lastIncludedTerm = newLastIncludedTerm
 				
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
@@ -348,6 +355,16 @@ func (rf *Raft) snapshotRoutine(snapshotReq SnapshotRequest){
 			
 				data := w.Bytes()
 				rf.persister.SaveStateAndSnapshot(data, snapshotReq.Snapshot)
+				rf.mu.Unlock()
+			}
+
+			default:
+				time.Sleep(time.Millisecond * 10)
+
+		}
+
+
+	}
 
 
 }
@@ -426,7 +443,7 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 		
 }
 
-func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+func (rf *Raft) sendInstallSnapshotRPC(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshotRPC", args, reply)
 	return ok
 }
@@ -492,8 +509,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convert2Follower(args.Term)
 	}
 
-	reply.Term = rf.currentTerm
-
 	higherTermCheck := true
 	higherIndexCheck := true
 
@@ -510,7 +525,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.lastTimestamp = time.Now()
 	}
 
-	reply.Term = rf.currentTerm
 }
 
 //
@@ -542,7 +556,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendRequestVoteRPC(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -585,8 +599,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// If command received from client: append entry to local log
 		rf.log = append(rf.log, newEntry)
 		rf.matchIndex[rf.me] = index
-		rf.nextIndex[rf.me] = index + 1
+		rf.nextIndex[rf.me] = index + 1 // need these for updating commit index
 		rf.persist()
+		go rf.startLeaderHeartBeats()
+		
 	}
 
 	return index, term, isLeader
@@ -659,6 +675,7 @@ func (rf *Raft) applyCommittedEntries(){
 		}
 
 		if rf.lastApplied < rf.lastIncludedIndex{
+			
 
 			newApplyMsg := ApplyMsg{
 				CommandValid  : false,
@@ -668,6 +685,7 @@ func (rf *Raft) applyCommittedEntries(){
 				SnapshotIndex : rf.lastIncludedIndex,
 
 			}
+			DPrintf("%v[%v] Apply Snapshot[%v]", rf.getStateStr(), rf.me, newApplyMsg)
 			rf.lastApplied = rf.lastIncludedIndex
 			rf.mu.Unlock()
 			rf.applyCh <- newApplyMsg
@@ -693,16 +711,17 @@ func (rf *Raft) applyCommittedEntries(){
 					CommandIndex: i,
 
 				}
+				DPrintf("%v[%v] Apply LogEntry[%v]", rf.getStateStr(), rf.me, newApplyMsg)
 				rf.mu.Unlock()
 				rf.applyCh <- newApplyMsg
 				rf.mu.Lock()
 				rf.lastApplied = i
-
+				
 			}
 		
 		}
-
 		rf.mu.Unlock()
+
 
 	}
 
@@ -794,7 +813,6 @@ func (rf *Raft) hasIndex(index int) bool{
 	return index > rf.lastIncludedIndex &&  len(rf.log) > (index - rf.lastIncludedIndex - 1)
 
 }
-// [0 1 2 3] [0 1 2 3 4 5 6 7]
 
 //get the length of the log 
 func (rf *Raft) getLogLen() int{
@@ -924,7 +942,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	go rf.startMainRoutine()
 	go rf.applyCommittedEntries()
-	
+	go rf.snapshotRoutine()
 
 	return rf
 }
@@ -1001,7 +1019,7 @@ func (rf *Raft) startCandidateElection() {
 		if i != rf.me {
 
 			go func(server int) {
-				getVote := rf.setUpSendRequestVote(server)
+				getVote := rf.sendRequestVote(server)
 				voteCh <- getVote
 			}(i)
 
@@ -1055,7 +1073,7 @@ rf.mu.Unlock()
 
 }
 // request vote set up helper function for candidate election 
-func (rf *Raft) setUpSendRequestVote(server int) int {
+func (rf *Raft) sendRequestVote(server int) int {
 	
 	rf.mu.Lock()
 	args := RequestVoteArgs{
@@ -1070,7 +1088,7 @@ func (rf *Raft) setUpSendRequestVote(server int) int {
 	DPrintf("%v[%v] -> send Req Vote to SERVER[%v] at Term[%v]",rf.getStateStr(), rf.me, server, rf.currentTerm)
 	rf.mu.Unlock()
 	
-	ok := rf.sendRequestVote(server, &args, &reply)
+	ok := rf.sendRequestVoteRPC(server, &args, &reply)
 
 	rf.mu.Lock()
 	DPrintf("%v[%v] <- send Req Vote Response[%v] from SERVER[%v] at Term[%v]",rf.getStateStr(), rf.me, ok, server, rf.currentTerm)
@@ -1114,77 +1132,37 @@ func (rf *Raft) startLeaderHeartBeats() {
 			return
 		}
 		rf.mu.Unlock()
-		if i != rf.me {
-			go rf.sendHeartBeat(i)
+		if i == rf.me {
+			continue
 		}
+
+		rf.mu.Lock()
+		prevIndex := rf.nextIndex[i]-1
+		lastIncludedIndex := rf.lastIncludedIndex
+		rf.mu.Unlock()
+
+		if lastIncludedIndex > prevIndex{
+			go rf.sendInstallSnapshot(i)
+		}else{
+			go rf.sendAppendEntries(i)
+		}
+
 	}
 
 }
 
 
 // leader's helper function to send heart beats to peers
-func (rf *Raft) sendHeartBeat(server int){
-
-	rf.mu.Lock()
-	prevIndex := rf.nextIndex[server]-1
-	lastIncludedIndex := rf.lastIncludedIndex
-	
-
-	if lastIncludedIndex > prevIndex{
-
-		installSnapshotArgs := InstallSnapshotArgs{
-
-			Term : rf.currentTerm,
-			LeaderID : rf.me,
-			LastIncludedIndex : rf.lastIncludedIndex,
-			LastIncludedTerm : rf.lastIncludedTerm,
-			Data : rf.persister.ReadSnapshot(),
-
-		}
-		DPrintf("%v[%v] -> Install Snap HB to SERVER[%v] at Term[%v]",rf.getStateStr(), rf.me, server,rf.currentTerm)
-		rf.mu.Unlock()
-
-		installSnapshotReply := InstallSnapshotReply{}
+func (rf *Raft) sendAppendEntries(server int){
 		
-		ok := rf.sendInstallSnapshot(server, &installSnapshotArgs, &installSnapshotReply)
-		rf.mu.Lock()
-		DPrintf("%v[%v] <- Install Snap HB Response[%v] from SERVER[%v] at Term[%v]",rf.getStateStr(),rf.me, ok, server, rf.currentTerm)
-		rf.mu.Unlock()
-		if ok{
-			
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			defer rf.persist()
-
-			if installSnapshotArgs.Term != rf.currentTerm || rf.state != Leader{ 
-				return
-			}
-
-			if rf.currentTerm < installSnapshotReply.Term {
-				rf.convert2Follower(installSnapshotReply.Term)
-				return
-			}
-
-			if installSnapshotReply.Term == rf.currentTerm{
-
-				rf.nextIndex[server] = installSnapshotArgs.LastIncludedIndex + 1
-				rf.matchIndex[server] = installSnapshotArgs.LastIncludedIndex
-				rf.updateCommitIndex()
-			}
-
-		}
-		return
-
-	}
-	rf.mu.Unlock()
-
-	args := AppendEntriesArgs{}
-	reply := AppendEntriesReply{}	
 	rf.mu.Lock()
-	args.Term = rf.currentTerm
-	args.LeaderID = rf.me
-	args.LeaderCommit = rf.commitIndex   
-	args.PrevLogIndex = rf.nextIndex[server]-1
+	args := AppendEntriesArgs{
+		Term: rf.currentTerm,
+		LeaderID: rf.me,
+		LeaderCommit: rf.commitIndex,
+		PrevLogIndex: rf.nextIndex[server]-1,
+	}
+	reply := AppendEntriesReply{}
 
 	if entry, success := rf.getLogAtIndex(args.PrevLogIndex); success{
 		args.PrevLogTerm = entry.Term
@@ -1200,7 +1178,7 @@ func (rf *Raft) sendHeartBeat(server int){
 	DPrintf("%v[%v] -> Append Entry HB to SERVER[%v] at Term[%v]",rf.getStateStr(),rf.me, server, rf.currentTerm)
 	rf.mu.Unlock()
 	
-	ok := rf.sendAppendEntries(server, &args, &reply)
+	ok := rf.sendAppendEntriesRPC(server, &args, &reply)
 	rf.mu.Lock()
 	DPrintf("%v[%v] <- Append Entry HB Response[%v] from SERVER[%v] at Term[%v]",rf.getStateStr(),rf.me, ok, server, rf.currentTerm)
 	rf.mu.Unlock()
@@ -1261,4 +1239,53 @@ func (rf *Raft) sendHeartBeat(server int){
 
 	}
 
+}
+
+
+func (rf *Raft) sendInstallSnapshot(server int){
+
+	rf.mu.Lock()
+
+		installSnapshotArgs := InstallSnapshotArgs{
+
+			Term : rf.currentTerm,
+			LeaderID : rf.me,
+			LastIncludedIndex : rf.lastIncludedIndex,
+			LastIncludedTerm : rf.lastIncludedTerm,
+			Data : rf.persister.ReadSnapshot(),
+
+		}
+		DPrintf("%v[%v] -> Install Snap HB to SERVER[%v] at Term[%v]",rf.getStateStr(), rf.me, server,rf.currentTerm)
+		rf.mu.Unlock()
+
+		installSnapshotReply := InstallSnapshotReply{}
+		
+		ok := rf.sendInstallSnapshotRPC(server, &installSnapshotArgs, &installSnapshotReply)
+
+		rf.mu.Lock()
+		DPrintf("%v[%v] <- Install Snap HB Response[%v] from SERVER[%v] at Term[%v]",rf.getStateStr(),rf.me, ok, server, rf.currentTerm)
+		rf.mu.Unlock()
+		if ok{
+			
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			defer rf.persist()
+
+			if installSnapshotArgs.Term != rf.currentTerm || rf.state != Leader{ 
+				return
+			}
+
+			if rf.currentTerm < installSnapshotReply.Term {
+				rf.convert2Follower(installSnapshotReply.Term)
+				return
+			}
+
+			if installSnapshotReply.Term == rf.currentTerm{
+
+				rf.nextIndex[server] = installSnapshotArgs.LastIncludedIndex + 1
+				rf.matchIndex[server] = installSnapshotArgs.LastIncludedIndex
+				rf.updateCommitIndex()
+			}
+
+		}
 }
