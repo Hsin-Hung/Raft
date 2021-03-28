@@ -594,7 +594,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	
+	defer rf.persist()
+
 	index := -1
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
@@ -613,10 +614,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// If command received from client: append entry to local log
 		rf.log = append(rf.log, newEntry)
 		rf.matchIndex[rf.me] = index
-		rf.nextIndex[rf.me] = index + 1 // need these for updating commit index
-		rf.persist()
-		go rf.startLeaderHeartBeats()
-		
+		rf.nextIndex[rf.me] = index + 1
 	}
 
 	return index, term, isLeader
