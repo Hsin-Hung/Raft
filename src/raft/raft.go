@@ -497,7 +497,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
-	DPrintf("CANDIDATE[%v] -> RequestVote -> %v[%v] at Term[%v]",args.CandidateID, rf.getStateStr(), rf.me, args.Term)
+
+	
+	if rf.killed(){
+		return 
+	}
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -512,13 +516,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convert2Follower(args.Term)
 	}
 
+	reply.Term = rf.currentTerm
+
 	higherTermCheck := true
 	higherIndexCheck := true
 
-	if len(rf.log)>0{
-		higherTermCheck = args.LastLogTerm > rf.getLastTerm()
-		higherIndexCheck = (args.LastLogTerm == rf.getLastTerm()) && (args.LastLogIndex >= rf.getLastIndex())
-	}
+
+	higherTermCheck = args.LastLogTerm > rf.getLastTerm()
+	higherIndexCheck = (args.LastLogTerm == rf.getLastTerm()) && (args.LastLogIndex >= rf.getLastIndex())
+	
 
     // 2. If votedFor is null or candidateId, and candidate’s log is at
     // least as up-to-date as receiver’s log, grant vote
@@ -527,6 +533,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.lastTimestamp = time.Now()
 	}
+
+	reply.Term = rf.currentTerm
 
 }
 
@@ -1007,98 +1015,63 @@ func (rf *Raft) startFollower() {
 func (rf *Raft) startCandidateElection() {
 
 	rf.mu.Lock()
+	rf.randomizeTimerDuration()
 	rf.currentTerm++
-	DPrintf("%v[%v] starts ELECTION at Term[%v]",rf.getStateStr(), rf.me, rf.currentTerm)
-	grantedVotes := 1
+	totalVotes := 1
 	processedVotes := 1
 	rf.voteFor = rf.me
 	rf.persist()
 	majority := len(rf.peers)/2 + 1
 	electionStartTime := time.Now()
-	voteCh := make(chan int)
 	rf.mu.Unlock()
 
+	cond := sync.NewCond(&rf.mu)
 	for i := range rf.peers {
 		if i != rf.me {
-
 			go func(server int) {
 				getVote := rf.sendRequestVote(server)
-				voteCh <- getVote
+				rf.mu.Lock()
+				if getVote!=-1{
+					processedVotes++
+					if getVote==1{
+						totalVotes++
+					}
+				}
+				cond.Broadcast()
+				rf.mu.Unlock()
 			}(i)
-
-
 		}
 	}
 
-outer:
-for {
+rf.mu.Lock()
+defer rf.mu.Unlock()
 
-	select {
+for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candidate && time.Now().Sub(electionStartTime)<rf.getElectionTimeoutDuration(){
 
-		case voteResult := <- voteCh:
-			{
-				rf.mu.Lock()
-
-				if voteResult != -1{
-
-					processedVotes++
-
-					if voteResult==1{
-						grantedVotes++
-					}
-
-				}
-
-				if processedVotes==len(rf.peers) || 
-				grantedVotes >= majority || 
-				rf.state != Candidate || 
-				time.Now().Sub(electionStartTime)>=rf.getElectionTimeoutDuration(){
-					rf.mu.Unlock()
-					break outer
-				}
-
-				rf.mu.Unlock()
-
-			}
-
-
-	}
-
-
+	cond.Wait()
 }
 
-rf.mu.Lock()
 // if candidate gets majority of votes, then beomces a leader 
-if rf.state == Candidate && grantedVotes >= majority{
+if rf.state == Candidate && totalVotes >= majority{
 		rf.convert2Leader()
 }
-rf.mu.Unlock()
+
 
 }
 // request vote set up helper function for candidate election 
 func (rf *Raft) sendRequestVote(server int) int {
 	
-	rf.mu.Lock()
-	args := RequestVoteArgs{
-
-		Term: rf.currentTerm,
-		CandidateID: rf.me,
-		LastLogIndex: rf.getLastIndex(),
-		LastLogTerm: rf.getLastTerm(),
-
-	}
+	args := RequestVoteArgs{}
 	reply := RequestVoteReply{}
-	DPrintf("%v[%v] -> send Req Vote to SERVER[%v] at Term[%v]",rf.getStateStr(), rf.me, server, rf.currentTerm)
-	rf.mu.Unlock()
-	
-	ok := rf.sendRequestVoteRPC(server, &args, &reply)
-
 	rf.mu.Lock()
-	DPrintf("%v[%v] <- send Req Vote Response[%v] from SERVER[%v] at Term[%v]",rf.getStateStr(), rf.me, ok, server, rf.currentTerm)
+	args.CandidateID = rf.me
+	args.LastLogIndex = rf.getLastIndex()
+	args.LastLogTerm = rf.getLastTerm()
+	args.Term = rf.currentTerm
 	rf.mu.Unlock()
 
+	ok := rf.sendRequestVoteRPC(server, &args, &reply)
 	if ok {
-		
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		defer rf.persist()
@@ -1115,10 +1088,9 @@ func (rf *Raft) sendRequestVote(server int) int {
 
 		if reply.VoteGranted{
 			return 1
+		}else{
+			return 0
 		}
-		
-		return 0
-		
 		
 	}
 	return 0
