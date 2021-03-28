@@ -492,26 +492,6 @@ func (rf *Raft) applySnapshot(){
 
 }
 
-// trim the log at and include the given index [0 1 2] [0 1 2 3 4 5 6]
-func (rf *Raft) trimLogAtIndex(index int){
-
-
-	if rf.hasIndex(index){
-
-		log := make([] LogEntry, rf.getLastIndex() - index)
-		copy(log, rf.log[rf.convert2LogIndex(index)+1:])
-		rf.log = log
-
-		
-	}else{
-
-		rf.log = make([] LogEntry, 0)
-
-	}
-
-	
-
-}
 //
 // example RequestVote RPC handler.
 //
@@ -677,7 +657,7 @@ func (rf *Raft) updateCommitIndex(){
 			for _, val := range matches{
 				if val >= i{
 					count++
-					if entry, success := rf.getLogAtIndex(i); (count > len(matches)/2) && success && (entry.Term == rf.currentTerm){
+					if (count > len(matches)/2) && (i <= rf.lastIncludedIndex || rf.log[rf.convert2LogIndex(i)].Term == rf.currentTerm){
 							rf.commitIndex = i
 							rf.applyMsgCond.Broadcast() // new commit so notify to send appy msg to tester 
 							return
@@ -699,45 +679,21 @@ func (rf *Raft) updateCommitIndex(){
 //
 //
 func (rf *Raft) applyCommittedEntries(){
-	outer:
+
 	for !rf.killed(){
 
 		rf.mu.Lock()
-
-		for rf.lastApplied >= rf.commitIndex{
-			rf.applyMsgCond.Wait()
-		}
-
-		if rf.lastApplied < rf.lastIncludedIndex{
-			
-
-			newApplyMsg := ApplyMsg{
-				CommandValid  : false,
-				SnapshotValid : true,
-				Snapshot      : rf.persister.ReadSnapshot(),
-				SnapshotTerm  : rf.lastIncludedTerm,
-				SnapshotIndex : rf.lastIncludedIndex,
-
-			}
-			DPrintf("%v[%v] Apply Snapshot[%v]", rf.getStateStr(), rf.me, newApplyMsg)
-			rf.lastApplied = rf.lastIncludedIndex
-			rf.mu.Unlock()
-			rf.applyCh <- newApplyMsg
-			
-			continue outer
-		}
-
+		rf.applyMsgCond.Wait()
+		lastApplied := rf.lastApplied
+		commitIndex := rf.commitIndex
+		log := make([]LogEntry, len(rf.log))
+		copy(log, rf.log)
 		
-		if rf.lastApplied < rf.commitIndex{
+		
+		if lastApplied < commitIndex{
 
 			for i:=rf.lastApplied + 1;i<= rf.commitIndex ; i++ {
-
-				entry, success := rf.getLogAtIndex(i)
-				if !success || i == rf.lastIncludedIndex{
-					continue
-				}
-				
-
+				entry := rf.log[rf.convert2LogIndex(i)]
 				newApplyMsg := ApplyMsg{
 	
 					CommandValid: entry.CommandValid,
@@ -745,20 +701,16 @@ func (rf *Raft) applyCommittedEntries(){
 					CommandIndex: i,
 
 				}
-				DPrintf("%v[%v] Apply LogEntry[%v]", rf.getStateStr(), rf.me, newApplyMsg)
 				rf.mu.Unlock()
 				rf.applyCh <- newApplyMsg
 				rf.mu.Lock()
 				rf.lastApplied = i
-				
+
 			}
-		
+
 		}
 		rf.mu.Unlock()
-
-
 	}
-
 
 
 }
@@ -863,7 +815,7 @@ func (rf *Raft) getLastIndex() int{
 func (rf *Raft) getLastTerm() int{
 
 	if len(rf.log)>0{
-		return rf.getLastLog().Term
+		return rf.log[len(rf.log)-1].Term
 	}
 	return rf.lastIncludedTerm
 
@@ -903,6 +855,25 @@ func (rf *Raft) convert2LogIndex(index int) int {
 func (rf *Raft) convert2ActualIndex(index int) int{
 
 	return rf.lastIncludedIndex + index + 1
+
+}
+
+func (rf *Raft) trimLogAtIndex(index int){
+
+
+	if rf.hasIndex(index){
+
+		log := make([] LogEntry, rf.getLastIndex() - index)
+		copy(log, rf.log[rf.convert2LogIndex(index)+1:])
+		rf.log = log
+		
+	}else{
+
+		rf.log = make([] LogEntry, 0)
+
+	}
+
+	
 
 }
 
@@ -973,6 +944,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	if rf.lastApplied < rf.lastIncludedIndex{
+
+		newApplyMsg := ApplyMsg{
+			CommandValid  : false,
+			SnapshotValid : true,
+			Snapshot      : rf.persister.ReadSnapshot(),
+			SnapshotTerm  : rf.lastIncludedTerm,
+			SnapshotIndex : rf.lastIncludedIndex,
+
+		}
+		rf.lastApplied = rf.lastIncludedIndex
+		rf.applyCh <- newApplyMsg
+		
+	}
 
 	go rf.startMainRoutine()
 	go rf.applyCommittedEntries()
