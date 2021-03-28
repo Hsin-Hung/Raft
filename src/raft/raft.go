@@ -439,9 +439,7 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 	rf.lastIncludedIndex = args.LastIncludedIndex
 	rf.lastIncludedTerm = args.LastIncludedTerm
 	rf.saveSnapShot(args)
-	rf.mu.Unlock()
-	rf.applySnapshot()
-	rf.mu.Lock()
+	rf.applyMsgCond.Signal()
 	// 5. Save snapshot file, discard any existing or partial snapshot
 	// with a smaller index
 
@@ -472,25 +470,25 @@ func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
 
 }
 
-func (rf *Raft) applySnapshot(){
-	rf.mu.Lock()
-	if rf.lastApplied < rf.lastIncludedIndex{
+// func (rf *Raft) applySnapshot(){
+// 	rf.mu.Lock()
+// 	if rf.lastApplied < rf.lastIncludedIndex{
 
-		newApplyMsg := ApplyMsg{
-			CommandValid  : false,
-			SnapshotValid : true,
-			Snapshot      : rf.persister.ReadSnapshot(),
-			SnapshotTerm  : rf.lastIncludedTerm,
-			SnapshotIndex : rf.lastIncludedIndex,
+// 		newApplyMsg := ApplyMsg{
+// 			CommandValid  : false,
+// 			SnapshotValid : true,
+// 			Snapshot      : rf.persister.ReadSnapshot(),
+// 			SnapshotTerm  : rf.lastIncludedTerm,
+// 			SnapshotIndex : rf.lastIncludedIndex,
 
-		}
-		rf.lastApplied = rf.lastIncludedIndex
-		rf.mu.Unlock()
-		rf.applyCh <- newApplyMsg
+// 		}
+// 		rf.lastApplied = rf.lastIncludedIndex
+// 		rf.mu.Unlock()
+// 		rf.applyCh <- newApplyMsg
 		
-	}
+// 	}
 
-}
+// }
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -614,7 +612,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
 
 	index := -1
 	term := rf.currentTerm
@@ -635,6 +632,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, newEntry)
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me] = index + 1
+		rf.persist()
 	}
 
 	return index, term, isLeader
@@ -677,7 +675,7 @@ func (rf *Raft) updateCommitIndex(){
 					count++
 					if (count > len(matches)/2) && (i <= rf.lastIncludedIndex || rf.log[rf.convert2LogIndex(i)].Term == rf.currentTerm){
 							rf.commitIndex = i
-							rf.applyMsgCond.Broadcast() // new commit so notify to send appy msg to tester 
+							rf.applyMsgCond.Signal() // new commit so notify to send appy msg to tester 
 							return
 					}
 				}
@@ -695,10 +693,23 @@ func (rf *Raft) applyCommittedEntries(){
 		rf.mu.Lock()
 		rf.applyMsgCond.Wait()
 		lastApplied := rf.lastApplied
-		commitIndex := rf.commitIndex
-		log := make([]LogEntry, len(rf.log))
-		copy(log, rf.log)
+		commitIndex := rf.commitIndex		
 		
+		if rf.lastApplied < rf.lastIncludedIndex{
+	
+			newApplyMsg := ApplyMsg{
+				CommandValid  : false,
+				SnapshotValid : true,
+				Snapshot      : rf.persister.ReadSnapshot(),
+				SnapshotTerm  : rf.lastIncludedTerm,
+				SnapshotIndex : rf.lastIncludedIndex,
+	
+			}
+			rf.lastApplied = rf.lastIncludedIndex
+			rf.mu.Unlock()
+			rf.applyCh <- newApplyMsg
+			continue 
+		}
 		
 		if lastApplied < commitIndex{
 
