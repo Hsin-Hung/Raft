@@ -198,7 +198,9 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	DPrintf("LEADER[%v] -> Append Entry -> %v[%v] at Term[%v]",args.LeaderID, rf.getStateStr(), rf.me, args.Term)
+	if rf.killed(){
+		return
+	}
 
 	reply.Success = true
 	reply.Term = rf.currentTerm
@@ -215,53 +217,55 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	if rf.currentTerm < args.Term || rf.state == Candidate{
 		rf.convert2Follower(args.Term)
 	}
+
 	rf.lastTimestamp = time.Now()
 	reply.Term = rf.currentTerm
 
+	if args.PrevLogIndex < rf.lastIncludedIndex || (args.PrevLogIndex == rf.lastIncludedIndex && args.PrevLogTerm != rf.lastIncludedTerm){
+		reply.ConflictIndex = 1
+		reply.Success = false
+		return
+	}
+
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
     // whose term matches prevLogTerm
-	if args.PrevLogIndex > rf.getLastIndex(){
 
-		reply.ConflictIndex = rf.getLogLen()
-		reply.Success = false
-		return
+	if args.PrevLogIndex != rf.lastIncludedIndex{
+		if args.PrevLogIndex>=rf.getLogLen(){
 
-	}else if entry, success := rf.getLogAtIndex(args.PrevLogIndex); success && entry.Term != args.PrevLogTerm{
-
-		reply.ConflictTerm = entry.Term
-
-		for i, val := range rf.log{
-
-			if val.Term == reply.ConflictTerm{
-				reply.ConflictIndex = rf.convert2ActualIndex(i)
-				break
+			reply.ConflictIndex = rf.getLogLen()
+			reply.Success = false
+			return
+	
+		}else if (args.PrevLogIndex>=0 && rf.log[rf.convert2LogIndex(args.PrevLogIndex)].Term != args.PrevLogTerm){
+	
+			reply.ConflictTerm = rf.log[rf.convert2LogIndex(args.PrevLogIndex)].Term
+	
+			for i, val := range rf.log{
+	
+				if val.Term == reply.ConflictTerm{
+					reply.ConflictIndex = rf.convert2ActualIndex(i)
+					break
+				}
+	
 			}
-
+			reply.Success = false
+			return
+	
 		}
-		reply.Success = false
-		return
-
 	}
+
 
 	
 	// 3. If an existing entry conflicts with a new one (same index
 	// 	but different terms), delete the existing entry and all that
 	// 	follow it 
 
-	for i, entry:= range args.Entries{
+	for i := range args.Entries{
 
-		if rf.hasIndex(args.PrevLogIndex+1+i){
-
-			if e, success := rf.getLogAtIndex(args.PrevLogIndex+1+i); success && e.Term != entry.Term{
-				rf.log = rf.log[:rf.convert2LogIndex(args.PrevLogIndex+1+i)]
-				rf.log = append(rf.log, entry)
-
-			}
-			
-		}else{
-
-			rf.log = append(rf.log, entry)
-
+		if args.PrevLogIndex+1+i >= rf.getLogLen() || args.Entries[i].Term != rf.log[rf.convert2LogIndex(args.PrevLogIndex+1+i)].Term{
+			rf.log = append(rf.log[:rf.convert2LogIndex(args.PrevLogIndex+1+i)], args.Entries[i:]...)
+			break
 		}
 
 	}
@@ -278,7 +282,6 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	}
 
 	reply.Term = rf.currentTerm
-	rf.lastTimestamp = time.Now()
 
 }
 
@@ -1131,22 +1134,18 @@ func (rf *Raft) startLeaderHeartBeats() {
 			rf.mu.Unlock()
 			return
 		}
-		rf.mu.Unlock()
 		if i == rf.me {
+			rf.mu.Unlock()
 			continue
 		}
-
-		rf.mu.Lock()
-		prevIndex := rf.nextIndex[i]-1
+		nextIndex := rf.nextIndex[i]
 		lastIncludedIndex := rf.lastIncludedIndex
 		rf.mu.Unlock()
-
-		if lastIncludedIndex > prevIndex{
+		if lastIncludedIndex >= nextIndex{
 			go rf.sendInstallSnapshot(i)
 		}else{
 			go rf.sendAppendEntries(i)
 		}
-
 	}
 
 }
@@ -1155,41 +1154,37 @@ func (rf *Raft) startLeaderHeartBeats() {
 // leader's helper function to send heart beats to peers
 func (rf *Raft) sendAppendEntries(server int){
 		
+	args := AppendEntriesArgs{}
+	reply := AppendEntriesReply{}	
 	rf.mu.Lock()
-	args := AppendEntriesArgs{
-		Term: rf.currentTerm,
-		LeaderID: rf.me,
-		LeaderCommit: rf.commitIndex,
-		PrevLogIndex: rf.nextIndex[server]-1,
-	}
-	reply := AppendEntriesReply{}
+	args.Term = rf.currentTerm
+	args.LeaderID = rf.me
+	args.LeaderCommit = rf.commitIndex   
+	args.PrevLogIndex = rf.nextIndex[server]-1
 
-	if entry, success := rf.getLogAtIndex(args.PrevLogIndex); success{
-		args.PrevLogTerm = entry.Term
-	}else{
+	if args.PrevLogIndex == rf.lastIncludedIndex{
 		args.PrevLogTerm = rf.lastIncludedTerm
+	}else{
+		args.PrevLogTerm = rf.log[rf.convert2LogIndex(args.PrevLogIndex)].Term
 	}
+
 	// If last log index ≥ nextIndex for a follower
-	if rf.hasIndex(rf.nextIndex[server]){
+	if rf.getLogLen() > rf.nextIndex[server]{
 		newEntries := make([] LogEntry, rf.getLogLen()-rf.nextIndex[server])
 		copy(newEntries, rf.log[rf.convert2LogIndex(rf.nextIndex[server]):])
 		args.Entries = newEntries
 	}
-	DPrintf("%v[%v] -> Append Entry HB to SERVER[%v] at Term[%v]",rf.getStateStr(),rf.me, server, rf.currentTerm)
 	rf.mu.Unlock()
-	
 	ok := rf.sendAppendEntriesRPC(server, &args, &reply)
-	rf.mu.Lock()
-	DPrintf("%v[%v] <- Append Entry HB Response[%v] from SERVER[%v] at Term[%v]",rf.getStateStr(),rf.me, ok, server, rf.currentTerm)
-	rf.mu.Unlock()
+
 	if ok{
-		
+
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		defer rf.persist()
 
 		// outdated rpc 
-		if args.Term != rf.currentTerm || rf.state != Leader{ 
+		if args.Term != rf.currentTerm{ 
 			return
 		}
 
@@ -1238,7 +1233,6 @@ func (rf *Raft) sendAppendEntries(server int){
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 
 	}
-
 }
 
 
