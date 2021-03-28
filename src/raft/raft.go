@@ -302,6 +302,10 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	return true
 }
 
+type SnapshotRequest struct {
+	Index int
+	Snapshot [] byte
+}
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
@@ -312,41 +316,31 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		Index : index,
 		Snapshot : snapshot,
 	}
-	
 	rf.snapshotCh <- snapshotReq
+
 }
 
-type SnapshotRequest struct {
-	Index int
-	Snapshot [] byte
-}
 func (rf *Raft) snapshotRoutine(){
 
-	outer:
-	for {
+	
+	for !rf.killed(){
 
-		select{
+		select {
 
-
-			case snapshotReq := <- rf.snapshotCh:
+		case snapshotReq := <- rf.snapshotCh:
 			{
 				rf.mu.Lock()
-				DPrintf("%v[%v] get SNAPSHOT",rf.getStateStr(),rf.me)
-				if snapshotReq.Index <= rf.lastIncludedIndex{
+				
+				if snapshotReq.Index <= rf.lastIncludedIndex || rf.lastIncludedIndex > rf.lastApplied{
 					rf.mu.Unlock()
-					continue outer
+					continue 
 				}
-				entry, success := rf.getLogAtIndex(snapshotReq.Index)
-				if !success{
-					rf.mu.Unlock()
-					continue outer
-				}
+				//log.Printf("snap shot routine : index: %v, lastin: %v, log: %v",snapshotReq.Index, rf.lastIncludedIndex, rf.log)
 
-				newLastIncludedTerm := entry.Term
+				rf.lastIncludedTerm = rf.log[rf.convert2LogIndex(snapshotReq.Index)].Term
 				rf.trimLogAtIndex(snapshotReq.Index)
 				rf.lastIncludedIndex = snapshotReq.Index
-				rf.lastIncludedTerm = newLastIncludedTerm
-				
+
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
 			
@@ -357,18 +351,14 @@ func (rf *Raft) snapshotRoutine(){
 				e.Encode(rf.lastIncludedTerm)
 			
 				data := w.Bytes()
+
 				rf.persister.SaveStateAndSnapshot(data, snapshotReq.Snapshot)
 				rf.mu.Unlock()
 			}
-
-			default:
-				time.Sleep(time.Millisecond * 10)
-
 		}
 
 
 	}
-
 
 }
 
@@ -389,59 +379,72 @@ type InstallSnapshotReply struct{
 func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnapshotReply){
 
 
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		defer rf.persist()
-		DPrintf("LEADER[%v] -> InstallSnap -> %v[%v] with LastIX[%v] at Term[%v]",args.LeaderID, rf.getStateStr(), rf.me, args.LastIncludedIndex, args.Term)
-		reply.Term = rf.currentTerm
-
-		// 1. Reply immediately if term < currentTerm
-		if args.Term < rf.currentTerm{
-			return
-		}
-
-		if args.Term > rf.currentTerm{
-			rf.convert2Follower(args.Term)
-		}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer rf.persist()
+	reply.Term = rf.currentTerm
 
 
-		rf.lastTimestamp = time.Now()
+	// 1. Reply immediately if term < currentTerm
+	if args.Term < rf.currentTerm{
+		return
+	}
+
+	if args.Term > rf.currentTerm{
+		rf.convert2Follower(args.Term)
+	}
+
+	reply.Term = rf.currentTerm
+	rf.lastTimestamp = time.Now()
+
+	if rf.lastIncludedIndex >= args.LastIncludedIndex{
+		return
+	}
 		
+	// 2. Create new snapshot file if first chunk (offset is 0)
 
-		// 2. Create new snapshot file if first chunk (offset is 0)
+	// 3. Write data into snapshot file at given offset
 
-		// 3. Write data into snapshot file at given offset
-
-		// 4. Reply and wait for more data chunks if done is false
+	// 4. Reply and wait for more data chunks if done is false
 	
-		// 5. Save snapshot file, discard any existing or partial snapshot
-		// with a smaller index
+	// 5. Save snapshot file, discard any existing or partial snapshot
+	// with a smaller index
 
-		if rf.lastIncludedIndex >= args.LastIncludedIndex{
-			return
-		}
+	// 6. If existing log entry has same index and term as snapshot’s
+	// last included entry, retain log entries following it and reply
+	
+	
+	if args.LastIncludedIndex >= rf.getLastIndex(){
+		rf.log = make([] LogEntry, 0)
+		rf.commitIndex = args.LastIncludedIndex
 
-		if entry, success := rf.getLogAtIndex(args.LastIncludedIndex); success && entry.Term == args.LastIncludedTerm{
+	}else if rf.log[rf.convert2LogIndex(args.LastIncludedIndex)].Term == args.LastIncludedTerm{
 
-			// 6. If existing log entry has same index and term as snapshot’s
-			// last included entry, retain log entries following it and reply
-			rf.trimLogAtIndex(args.LastIncludedIndex)
-
-		}else{
-
-			// 7. Discard the entire log
-			rf.log = make([] LogEntry, 0)
-
-		}
-
+		rf.trimLogAtIndex(args.LastIncludedIndex)
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
-		rf.commitIndex = rf.lastIncludedIndex
-
-		// 8. Reset state machine using snapshot contents (and load
-		// snapshot’s cluster configuration)
+		if rf.commitIndex < args.LastIncludedIndex{
+			rf.commitIndex = args.LastIncludedIndex
+		}
 		rf.saveSnapShot(args)
-		rf.applyMsgCond.Broadcast()
+		return 
+
+	}else{
+		rf.log = make([] LogEntry, 0)
+		rf.commitIndex = args.LastIncludedIndex
+
+	}
+
+	
+	rf.lastIncludedIndex = args.LastIncludedIndex
+	rf.lastIncludedTerm = args.LastIncludedTerm
+	rf.saveSnapShot(args)
+	rf.mu.Unlock()
+	rf.applySnapshot()
+	rf.mu.Lock()
+	// 5. Save snapshot file, discard any existing or partial snapshot
+	// with a smaller index
+
 
 		
 }
@@ -466,6 +469,26 @@ func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
 
 	data := w.Bytes()
 	rf.persister.SaveStateAndSnapshot(data, args.Data)
+
+}
+
+func (rf *Raft) applySnapshot(){
+	rf.mu.Lock()
+	if rf.lastApplied < rf.lastIncludedIndex{
+
+		newApplyMsg := ApplyMsg{
+			CommandValid  : false,
+			SnapshotValid : true,
+			Snapshot      : rf.persister.ReadSnapshot(),
+			SnapshotTerm  : rf.lastIncludedTerm,
+			SnapshotIndex : rf.lastIncludedIndex,
+
+		}
+		rf.lastApplied = rf.lastIncludedIndex
+		rf.mu.Unlock()
+		rf.applyCh <- newApplyMsg
+		
+	}
 
 }
 
