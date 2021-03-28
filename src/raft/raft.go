@@ -491,7 +491,27 @@ func (rf *Raft) applySnapshot(){
 	}
 
 }
+//
+// example RequestVote RPC arguments structure.
+// field names must start with capital letters!
+//
+type RequestVoteArgs struct {
+	// Your data here (2A, 2B).
+	Term         int
+	CandidateID  int
+	LastLogIndex int
+	LastLogTerm  int
+}
 
+//
+// example RequestVote RPC reply structure.
+// field names must start with capital letters!
+//
+type RequestVoteReply struct {
+	// Your data here (2A).
+	Term        int
+	VoteGranted bool
+}
 //
 // example RequestVote RPC handler.
 //
@@ -668,14 +688,6 @@ func (rf *Raft) updateCommitIndex(){
 }
 
 // apply commit entries by sending them to testers through applymsg channel 
-//
-//
-//	SnapshotValid bool
-//	Snapshot      []byte
-//	SnapshotTerm  int
-//	SnapshotIndex int
-//
-//
 func (rf *Raft) applyCommittedEntries(){
 
 	for !rf.killed(){
@@ -728,31 +740,9 @@ func (rf *Raft) randomizeTimerDuration(){
 
 }
 
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term         int
-	CandidateID  int
-	LastLogIndex int
-	LastLogTerm  int
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int
-	VoteGranted bool
-}
 
 // helper function to convert to a follower 
 func (rf *Raft) convert2Follower(term int){
-	DPrintf("%v[%v] becomes FOLLOWER at Term[%v]", rf.getStateStr(), rf.me, rf.currentTerm)
 	rf.state = Follower
 	rf.voteFor = -1
 	rf.currentTerm = term
@@ -761,16 +751,11 @@ func (rf *Raft) convert2Follower(term int){
 }
 
 func (rf *Raft) convert2Leader(){
-	DPrintf("%v[%v] becomes LEADER at Term[%v]", rf.getStateStr(), rf.me, rf.currentTerm)
 	rf.state = Leader 
 	rf.leaderStateInit()
 
 }
 
-func (rf *Raft) convert2Candidate(){
-	rf.state = Candidate
-	rf.randomizeTimerDuration()
-}
 
 //leader set up next index and match index for all servers 
 func (rf *Raft) leaderStateInit(){
@@ -885,20 +870,6 @@ func min(first int, second int) int{
 
 }
 
-func (rf *Raft) getStateStr() string{
-
-	if rf.state == Leader {
-		return "LEADER"
-
-	}else if rf.state == Candidate{
-		return "CANDIDATE"
-	}
-
-	return "FOLLOWER"
-
-
-}
-
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -938,7 +909,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyMsgCond = sync.NewCond(&rf.mu)
 
-	rf.snapshotCh = make(chan SnapshotRequest, 0)
+	rf.snapshotCh = make(chan SnapshotRequest)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -1005,8 +976,7 @@ func (rf *Raft) startFollower() {
 		
 		// if election timeout, then follower becomes a candidate
 		if timePassed>=rf.getElectionTimeoutDuration(){
-			DPrintf("%v[%v] timesout becomes CANDIDATE at Term[%v]",rf.getStateStr(), rf.me, rf.currentTerm)
-			rf.convert2Candidate()
+			rf.state = Candidate
 			rf.mu.Unlock()
 			return
 		}
@@ -1218,47 +1188,38 @@ func (rf *Raft) sendAppendEntries(server int){
 func (rf *Raft) sendInstallSnapshot(server int){
 
 	rf.mu.Lock()
+	installSnapshotArgs := InstallSnapshotArgs{
 
-		installSnapshotArgs := InstallSnapshotArgs{
+		Term : rf.currentTerm,
+		LeaderID : rf.me,
+		LastIncludedIndex : rf.lastIncludedIndex,
+		LastIncludedTerm : rf.lastIncludedTerm,
+		Data : rf.persister.ReadSnapshot(),
 
-			Term : rf.currentTerm,
-			LeaderID : rf.me,
-			LastIncludedIndex : rf.lastIncludedIndex,
-			LastIncludedTerm : rf.lastIncludedTerm,
-			Data : rf.persister.ReadSnapshot(),
+	}
 
-		}
-		DPrintf("%v[%v] -> Install Snap HB to SERVER[%v] at Term[%v]",rf.getStateStr(), rf.me, server,rf.currentTerm)
-		rf.mu.Unlock()
+	installSnapshotReply := InstallSnapshotReply{}
+	rf.mu.Unlock()
+	ok := rf.sendInstallSnapshotRPC(server, &installSnapshotArgs, &installSnapshotReply)
 
-		installSnapshotReply := InstallSnapshotReply{}
-		
-		ok := rf.sendInstallSnapshotRPC(server, &installSnapshotArgs, &installSnapshotReply)
+	if ok{
 
 		rf.mu.Lock()
-		DPrintf("%v[%v] <- Install Snap HB Response[%v] from SERVER[%v] at Term[%v]",rf.getStateStr(),rf.me, ok, server, rf.currentTerm)
-		rf.mu.Unlock()
-		if ok{
-			
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			defer rf.persist()
+		defer rf.mu.Unlock()
+		defer rf.persist()
 
-			if installSnapshotArgs.Term != rf.currentTerm || rf.state != Leader{ 
-				return
-			}
-
-			if rf.currentTerm < installSnapshotReply.Term {
-				rf.convert2Follower(installSnapshotReply.Term)
-				return
-			}
-
-			if installSnapshotReply.Term == rf.currentTerm{
-
-				rf.nextIndex[server] = installSnapshotArgs.LastIncludedIndex + 1
-				rf.matchIndex[server] = installSnapshotArgs.LastIncludedIndex
-				rf.updateCommitIndex()
-			}
-
+		if installSnapshotArgs.Term != rf.currentTerm{ 
+			return
 		}
+
+		if rf.currentTerm < installSnapshotReply.Term {
+			rf.convert2Follower(installSnapshotReply.Term)
+			return
+		}
+
+		rf.nextIndex[server] = rf.getLastIndex() + 1
+		rf.matchIndex[server] = installSnapshotArgs.LastIncludedIndex
+		rf.updateCommitIndex()
+		
+	}
 }
