@@ -915,7 +915,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastIncludedIndex = -1
 	rf.lastIncludedTerm = -1
 
-	rf.electionTimeoutDur = rand.Intn(250) + 400
+	rf.randomizeTimerDuration()
 	rf.lastTimestamp = time.Now()
 
 	rf.applyMsgCond = sync.NewCond(&rf.mu)
@@ -1010,20 +1010,30 @@ func (rf *Raft) startCandidateElection() {
 	rf.voteFor = rf.me
 	rf.persist()
 	majority := len(rf.peers)/2 + 1
-	electionStartTime := time.Now()
+	//electionStartTime := time.Now()
+	timeLimit := rf.getElectionTimeoutDuration()
+	hasTimedOut := false
 	rf.mu.Unlock()
-
 	cond := sync.NewCond(&rf.mu)
+
+	go func(){
+
+		time.Sleep(timeLimit)
+		rf.mu.Lock()
+		hasTimedOut = true
+		cond.Broadcast()
+		rf.mu.Unlock()
+
+	}()
+	
 	for i := range rf.peers {
 		if i != rf.me {
 			go func(server int) {
 				getVote := rf.sendRequestVote(server)
 				rf.mu.Lock()
-				if getVote!=-1{
-					processedVotes++
-					if getVote==1{
-						totalVotes++
-					}
+				processedVotes++
+				if getVote==1{
+					totalVotes++
 				}
 				cond.Broadcast()
 				rf.mu.Unlock()
@@ -1034,7 +1044,7 @@ func (rf *Raft) startCandidateElection() {
 rf.mu.Lock()
 defer rf.mu.Unlock()
 
-for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candidate && time.Now().Sub(electionStartTime)<rf.getElectionTimeoutDuration(){
+for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candidate && !hasTimedOut{
 
 	cond.Wait()
 }
