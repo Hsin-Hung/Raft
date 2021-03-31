@@ -91,7 +91,7 @@ type Raft struct {
 
 	applyMsgCond *sync.Cond		// notify for applying entries to state machine
 	
-	snapshotCh chan SnapshotRequest
+	snapshotCh chan SnapshotRequest   // for sending new snap shots
 
 	electionTimeoutDur int				// election time out duration  
 
@@ -316,10 +316,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		Index : index,
 		Snapshot : snapshot,
 	}
+
+	// send the new snap shot through channel to prevent deadlock here 
 	rf.snapshotCh <- snapshotReq
 
 }
 
+// adding new snap shot and trimming the log 
 func (rf *Raft) snapshotRoutine(){
 
 	
@@ -331,12 +334,13 @@ func (rf *Raft) snapshotRoutine(){
 			{
 				rf.mu.Lock()
 				
+				// dont apply the snap shot if you have a more recent snapshot or you havent applied everything up to the snapshot yet 
 				if snapshotReq.Index <= rf.lastIncludedIndex || rf.lastIncludedIndex > rf.lastApplied{
 					rf.mu.Unlock()
 					continue 
 				}
-				//log.Printf("snap shot routine : index: %v, lastin: %v, log: %v",snapshotReq.Index, rf.lastIncludedIndex, rf.log)
 
+				// trim the log
 				rf.lastIncludedTerm = rf.log[rf.convert2LogIndex(snapshotReq.Index)].Term
 				rf.trimLogAtIndex(snapshotReq.Index)
 				rf.lastIncludedIndex = snapshotReq.Index
@@ -368,14 +372,15 @@ type InstallSnapshotArgs struct{
 	LastIncludedIndex int
 	LastIncludedTerm int
 	Data []byte
-	Done bool
 }
 
 type InstallSnapshotReply struct{
 	Term int	
 }
 
-
+//
+// RPC handler for installing snapshots to keep followers up to date with the leader snap shot 
+//
 func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnapshotReply){
 
 
@@ -397,23 +402,19 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 	reply.Term = rf.currentTerm
 	rf.lastTimestamp = time.Now()
 
+	// dont apply if the follower has a more recent snapshot
 	if rf.lastIncludedIndex >= args.LastIncludedIndex{
 		return
 	}
 		
-	// 2. Create new snapshot file if first chunk (offset is 0)
 
-	// 3. Write data into snapshot file at given offset
 
-	// 4. Reply and wait for more data chunks if done is false
 	
 	// 5. Save snapshot file, discard any existing or partial snapshot
 	// with a smaller index
 
 	// 6. If existing log entry has same index and term as snapshot’s
 	// last included entry, retain log entries following it and reply
-	
-	
 	if args.LastIncludedIndex >= rf.getLastIndex(){
 		rf.log = make([] LogEntry, 0)
 		rf.commitIndex = args.LastIncludedIndex
@@ -440,9 +441,6 @@ func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnap
 	rf.lastIncludedTerm = args.LastIncludedTerm
 	rf.saveSnapShot(args)
 	rf.applyMsgCond.Signal()
-	// 5. Save snapshot file, discard any existing or partial snapshot
-	// with a smaller index
-
 
 		
 }
@@ -452,8 +450,7 @@ func (rf *Raft) sendInstallSnapshotRPC(server int, args *InstallSnapshotArgs, re
 	return ok
 }
 
-//  
-
+// helper method for install snapshot RPC handler to save states and snapshots 
 func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
 
 	w := new(bytes.Buffer)
@@ -470,25 +467,6 @@ func (rf *Raft) saveSnapShot(args *InstallSnapshotArgs){
 
 }
 
-// func (rf *Raft) applySnapshot(){
-// 	rf.mu.Lock()
-// 	if rf.lastApplied < rf.lastIncludedIndex{
-
-// 		newApplyMsg := ApplyMsg{
-// 			CommandValid  : false,
-// 			SnapshotValid : true,
-// 			Snapshot      : rf.persister.ReadSnapshot(),
-// 			SnapshotTerm  : rf.lastIncludedTerm,
-// 			SnapshotIndex : rf.lastIncludedIndex,
-
-// 		}
-// 		rf.lastApplied = rf.lastIncludedIndex
-// 		rf.mu.Unlock()
-// 		rf.applyCh <- newApplyMsg
-		
-// 	}
-
-// }
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -539,12 +517,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.Term = rf.currentTerm
 
-	higherTermCheck := true
-	higherIndexCheck := true
-
-
-	higherTermCheck = args.LastLogTerm > rf.getLastTerm()
-	higherIndexCheck = (args.LastLogTerm == rf.getLastTerm()) && (args.LastLogIndex >= rf.getLastIndex())
+	higherTermCheck := args.LastLogTerm > rf.getLastTerm()
+	higherIndexCheck := (args.LastLogTerm == rf.getLastTerm()) && (args.LastLogIndex >= rf.getLastIndex())
 	
 
     // 2. If votedFor is null or candidateId, and candidate’s log is at
@@ -695,6 +669,7 @@ func (rf *Raft) applyCommittedEntries(){
 		lastApplied := rf.lastApplied
 		commitIndex := rf.commitIndex		
 		
+		// for sending snap shots to the service and apply the snapshot 
 		if rf.lastApplied < rf.lastIncludedIndex{
 	
 			newApplyMsg := ApplyMsg{
@@ -711,6 +686,7 @@ func (rf *Raft) applyCommittedEntries(){
 			continue 
 		}
 		
+		// for sending regular committed entries to the service 
 		if lastApplied < commitIndex{
 
 			for i:=rf.lastApplied + 1;i<= rf.commitIndex ; i++ {
@@ -801,11 +777,12 @@ func (rf *Raft) getLogLen() int{
 
 }
 
+//get the last index
 func (rf *Raft) getLastIndex() int{
 	return rf.getLogLen()-1
 }
 
-
+//get the last term 
 func (rf *Raft) getLastTerm() int{
 
 	if len(rf.log)>0{
@@ -828,6 +805,7 @@ func (rf *Raft) getLogAtIndex(index int) (LogEntry, bool){
 
 }
 
+//get the last log 
 func (rf *Raft) getLastLog() LogEntry{
 
 	if len(rf.log)>0{
@@ -838,20 +816,21 @@ func (rf *Raft) getLastLog() LogEntry{
  
 }
 
-
-
+// convert an actual index to the trimmed log index 
 func (rf *Raft) convert2LogIndex(index int) int {
 
 	return index - rf.lastIncludedIndex - 1
 
 }
 
+//convert a trimmed log index to an actual index
 func (rf *Raft) convert2ActualIndex(index int) int{
 
 	return rf.lastIncludedIndex + index + 1
 
 }
 
+//trim the log at the given index 
 func (rf *Raft) trimLogAtIndex(index int){
 
 
@@ -925,6 +904,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	//restore the snapshot when coming back from a crash 
 	if rf.lastApplied < rf.lastIncludedIndex{
 
 		newApplyMsg := ApplyMsg{
@@ -1016,6 +996,7 @@ func (rf *Raft) startCandidateElection() {
 	rf.mu.Unlock()
 	cond := sync.NewCond(&rf.mu)
 
+	// election timer logic 
 	go func(){
 
 		time.Sleep(timeLimit)
