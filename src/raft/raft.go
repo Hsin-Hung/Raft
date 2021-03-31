@@ -1127,6 +1127,19 @@ func (rf *Raft) sendAppendEntries(server int){
 	args := AppendEntriesArgs{}
 	reply := AppendEntriesReply{}	
 	rf.mu.Lock()
+		// If last log index ≥ nextIndex for a follower
+		args.Entries = make([] LogEntry, 0)
+		for i:=rf.nextIndex[server]; i<=rf.getLastIndex(); i++{
+	
+			if rf.hasIndex(i){
+				args.Entries = append(args.Entries, rf.log[rf.convert2LogIndex(i)])
+	
+			}else{
+				args.Entries = make([] LogEntry, 0)
+				break
+			}
+	
+		}
 	args.Term = rf.currentTerm
 	args.LeaderID = rf.me
 	args.LeaderCommit = rf.commitIndex   
@@ -1138,12 +1151,7 @@ func (rf *Raft) sendAppendEntries(server int){
 		args.PrevLogTerm = rf.log[rf.convert2LogIndex(args.PrevLogIndex)].Term
 	}
 
-	// If last log index ≥ nextIndex for a follower
-	if rf.getLogLen() > rf.nextIndex[server]{
-		newEntries := make([] LogEntry, rf.getLogLen()-rf.nextIndex[server])
-		copy(newEntries, rf.log[rf.convert2LogIndex(rf.nextIndex[server]):])
-		args.Entries = newEntries
-	}
+
 	rf.mu.Unlock()
 	ok := rf.sendAppendEntriesRPC(server, &args, &reply)
 
