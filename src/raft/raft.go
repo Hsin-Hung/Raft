@@ -1171,7 +1171,7 @@ func (rf *Raft) sendAppendEntries(server int){
 
 				if rf.log[i].Term == reply.ConflictTerm{
 
-					rf.nextIndex[server] = rf.convert2ActualIndex(i) 
+					rf.nextIndex[server] = min(rf.convert2ActualIndex(i), reply.ConflictIndex) 
 					found = true
 					break
 				}
@@ -1189,6 +1189,7 @@ func (rf *Raft) sendAppendEntries(server int){
 
 		}	
 
+		rf.matchIndex[server] = rf.nextIndex[server] - 1
 
 	}
 }
