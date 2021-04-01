@@ -1167,11 +1167,11 @@ func (rf *Raft) sendAppendEntries(server int){
 			found := false
 
 			// if an entry is found with this conflict term
-			for i := len(rf.log)-1 ; i>=0 ; i--{
+			for i := len(rf.log)-1 ; i>0 ; i--{
 
 				if rf.log[i].Term == reply.ConflictTerm{
 
-					rf.nextIndex[server] = rf.convert2ActualIndex(i) //min(rf.convert2ActualIndex(i), reply.ConflictIndex) 
+					rf.nextIndex[server] = rf.convert2ActualIndex(i) 
 					found = true
 					break
 				}
