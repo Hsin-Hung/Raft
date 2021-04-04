@@ -18,10 +18,19 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const (
+	PutAppend = "PutAppend"
+	Get       = "Get"
+)
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	OpType string 
+	Key string
+	Value string 
+
 }
 
 type KVServer struct {
@@ -34,14 +43,30 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	storage map [string]string
+	isLeader bool
+
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+
+	if !kv.isLeader{
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	if !kv.isLeader{
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+
 }
 
 //
