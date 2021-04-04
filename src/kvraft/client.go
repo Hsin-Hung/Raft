@@ -3,11 +3,15 @@ package kvraft
 import "6.824/labrpc"
 import "crypto/rand"
 import "math/big"
+import "sync/atomic"
 import "log"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+
+	clientID int64
+	serialID int64
 }
 
 func nrand() int64 {
@@ -20,6 +24,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.clientID = nrand()
 	// You'll have to add code here.
 	return ck
 }
@@ -41,6 +46,8 @@ func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	args := GetArgs{
 		Key : key,
+		ClientID : ck.clientID,
+		SerialID : atomic.AddInt64(&ck.serialID,1),
 	}
 	reply := GetReply{}
 
@@ -88,6 +95,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		Key : key,
 		Value: value,
 		Op: op,
+		ClientID : ck.clientID,
+		SerialID : atomic.AddInt64(&ck.serialID,1),
 	}
 	reply := PutAppendReply{}
 
@@ -99,9 +108,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 			if reply.Err == OK{
 				log.Printf("KV server response: OK")
+				return 
 			}else if reply.Err == ErrWrongLeader{
 
-				log.Printf("KV server response: Wrong Leader Error")
+				//log.Printf("KV server response: Wrong Leader Error")
 				continue 
 
 			}else{
