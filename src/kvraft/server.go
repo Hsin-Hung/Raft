@@ -26,6 +26,8 @@ type Op struct {
 	OpType string 
 	Key string
 	Value string 
+	ClientID int64
+	SerialID int64
 
 }
 
@@ -52,6 +54,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	op := Op{
 		OpType: "Get",
 		Key: args.Key,
+		ClientID: args.ClientID,
+		SerialID: args.SerialID,
 	}
 
 	index, term, isLeader := kv.rf.Start(op)
@@ -60,19 +64,19 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.isLeader = isLeader 
 	kv.mu.Unlock()
 	if isLeader{
-		log.Printf("%v request index %v", op.OpType, index)
+		DPrintf("KVSERVER[%v] receives GET[%v] from CLIENT[%v]",kv.me, args.SerialID, args.ClientID)
 		kv.mu.Lock()
-		kv.waitingIndex[index-1] = make(chan bool)
+		kv.waitingIndex[index] = make(chan bool)
 		kv.mu.Unlock()
 
 		select {
 
-		case <- kv.waitingIndex[index-1]:
+		case <- kv.waitingIndex[index]:
 			{
-
+				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 				reply.Err = ErrNoKey
 				if val, success := kv.executeOp(op); success{
-					log.Printf("got it")
+					DPrintf("KVSERVER[%v] RECEIVES SUCCESS COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 					reply.Err = OK
 					reply.Value = val
 				}
@@ -80,7 +84,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 			}
 		case <- time.NewTimer(10 * time.Second).C:
-			log.Printf("TIMEOUT")
+			DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 			reply.Err = ErrNoKey
 
 	}
@@ -91,7 +95,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Err = ErrWrongLeader
 
 	}
-	log.Printf("done")
 
 }
 
@@ -102,6 +105,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		OpType: args.Op,
 		Key: args.Key,
 		Value: args.Value,
+		ClientID: args.ClientID,
+		SerialID: args.SerialID,
 	}
 
 	index, term, isLeader := kv.rf.Start(op)
@@ -113,20 +118,20 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if isLeader{
 
-		log.Printf("%v request index %v", op.OpType, index)
+		DPrintf("KVSERVER[%v] receives %v[%v] from CLIENT[%v]",kv.me, args.Op, args.SerialID, args.ClientID)
 		kv.mu.Lock()
-		kv.waitingIndex[index-1] = make(chan bool)
+		kv.waitingIndex[index] = make(chan bool)
 		kv.mu.Unlock()
 
 		select {
 
-			case <- kv.waitingIndex[index-1]:
-				log.Printf("got it")
+			case <- kv.waitingIndex[index]:
+				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 				reply.Err = OK
 				kv.executeOp(op)
 
 			case <- time.NewTimer(10 * time.Second).C:
-				log.Printf("TIMEOUT")
+				DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 				reply.Err = ErrNoKey
 
 		}
@@ -137,8 +142,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = ErrWrongLeader
 
 	}
-
-	log.Printf("done")
 
 }
 
@@ -194,13 +197,17 @@ func (kv *KVServer) applyChListener(){
 	
 	for {
 		
-		log.Printf("waiting for apply ch")
+		DPrintf("KVSERVER[%v] waiting for APPLY",kv.me)
 		applyMsg := <- kv.applyCh
-		log.Printf("got apply ch %v", applyMsg.CommandIndex)
+
+		if !applyMsg.CommandValid || !kv.isLeader{
+			continue 
+		}
+		DPrintf("KVSERVER[%v] got APPLY[%v] for index[%v]",kv.me, applyMsg.Command ,applyMsg.CommandIndex)
 		kv.mu.Lock()
 		kv.waitingIndex[applyMsg.CommandIndex] <- true
 		kv.mu.Unlock()
-		log.Printf("send thru")
+		DPrintf("KVSERVER[%v] sent through WaitingIndex for index[%v]",kv.me ,applyMsg.CommandIndex)
 		time.Sleep(10 * time.Millisecond)
 
 	}
@@ -256,7 +263,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.waitingIndex = make(map[int]chan bool)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	log.Printf("start kv server")
+	DPrintf("START KVSERVER[%v]",kv.me)
 	// You may need initialization code here.
 	go kv.applyChListener()
 

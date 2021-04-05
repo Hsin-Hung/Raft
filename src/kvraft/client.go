@@ -51,6 +51,8 @@ func (ck *Clerk) Get(key string) string {
 	}
 	reply := GetReply{}
 
+	DPrintf("CLIENT[%v] -> Get[%v] -> KVSERVER", ck.clientID, args.SerialID)
+
 	for i := 0; ;i++{
 
 		ok := ck.servers[i%len(ck.servers)].Call("KVServer.Get", &args, &reply)
@@ -58,12 +60,12 @@ func (ck *Clerk) Get(key string) string {
 		if ok{
 
 			if reply.Err == OK{
-				log.Printf("KV server response: OK")
+				//log.Printf("KV server response: OK")
 				return reply.Value
 
 			}else if reply.Err == ErrWrongLeader{
 
-				log.Printf("KV server response: Wrong Leader Error")
+				//log.Printf("KV server response: Wrong Leader Error")
 				continue 
 
 			}else{
@@ -100,6 +102,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	}
 	reply := PutAppendReply{}
 
+	DPrintf("CLIENT[%v] -> PutAppend[%v] -> KVSERVER", ck.clientID, args.SerialID)
+
 	for i := 0; ;i++{
 
 		ok := ck.servers[i%len(ck.servers)].Call("KVServer.PutAppend", &args, &reply)
@@ -107,7 +111,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if ok{
 
 			if reply.Err == OK{
-				log.Printf("KV server response: OK")
+				//log.Printf("KV server response: OK")
 				return 
 			}else if reply.Err == ErrWrongLeader{
 
