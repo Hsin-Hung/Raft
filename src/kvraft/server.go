@@ -41,6 +41,8 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	hasExecuted map [int64]bool
+	clientLastCmd map[int64]int64
 	waitingIndex map [int]chan bool
 	storage map [string]string
 	isLeader bool
@@ -63,29 +65,32 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.term = term
 	kv.isLeader = isLeader 
 	kv.mu.Unlock()
+
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives GET[%v] from CLIENT[%v]",kv.me, args.SerialID, args.ClientID)
 		kv.mu.Lock()
 		kv.waitingIndex[index] = make(chan bool)
+		c := kv.waitingIndex[index]
 		kv.mu.Unlock()
 
 		select {
 
-		case <- kv.waitingIndex[index]:
+		case <- c:
 			{
 				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 				reply.Err = ErrNoKey
+				kv.mu.Lock()
 				if val, success := kv.executeOp(op); success{
 					DPrintf("KVSERVER[%v] RECEIVES SUCCESS COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 					reply.Err = OK
 					reply.Value = val
 				}
-
+				kv.mu.Unlock()
 
 			}
 		case <- time.NewTimer(10 * time.Second).C:
 			DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
-			reply.Err = ErrNoKey
+			reply.Err = ErrTimeOut
 
 	}
 
@@ -117,22 +122,24 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Unlock()
 
 	if isLeader{
-
 		DPrintf("KVSERVER[%v] receives %v[%v] from CLIENT[%v]",kv.me, args.Op, args.SerialID, args.ClientID)
 		kv.mu.Lock()
 		kv.waitingIndex[index] = make(chan bool)
+		c := kv.waitingIndex[index]
 		kv.mu.Unlock()
 
 		select {
 
-			case <- kv.waitingIndex[index]:
+			case <- c:
 				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 				reply.Err = OK
+				kv.mu.Lock()
 				kv.executeOp(op)
+				kv.mu.Unlock()
 
 			case <- time.NewTimer(10 * time.Second).C:
 				DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
-				reply.Err = ErrNoKey
+				reply.Err = ErrTimeOut
 
 		}
 
@@ -147,8 +154,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 func (kv *KVServer) executeOp(op Op) (string, bool){
 
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 
 	switch op.OpType{
 
@@ -167,7 +172,13 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 			}
 		case "Put":
 			{
-				kv.storage[op.Key] = op.Value
+				if _, ok := kv.hasExecuted[op.SerialID+op.ClientID]; !ok{
+					kv.hasExecuted[op.SerialID+op.ClientID] = true 
+					kv.storage[op.Key] = op.Value
+
+				}else{
+				}
+				
 				return "", true
 			}
 
@@ -175,11 +186,22 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 			{
 				if val, ok := kv.storage[op.Key]; ok{
 
-					kv.storage[op.Key] = val + op.Value
+					if _, ok := kv.hasExecuted[op.SerialID+op.ClientID]; !ok{
+
+						kv.hasExecuted[op.SerialID+op.ClientID] = true 
+						kv.storage[op.Key] = val + op.Value
+
+					}
+					
 
 				}else{
 
-					kv.storage[op.Key] = op.Value
+					if _, ok := kv.hasExecuted[op.SerialID+op.ClientID]; !ok{
+						
+						kv.hasExecuted[op.SerialID+op.ClientID] = true 
+						kv.storage[op.Key] = op.Value
+
+					}
 
 				}
 				return "", true
@@ -199,14 +221,23 @@ func (kv *KVServer) applyChListener(){
 		
 		DPrintf("KVSERVER[%v] waiting for APPLY",kv.me)
 		applyMsg := <- kv.applyCh
+		kv.mu.Lock()
+		_, checkLeader := kv.rf.GetState()
+		if !applyMsg.CommandValid || !checkLeader{
+			if op, ok := applyMsg.Command.(Op); ok{
 
-		if !applyMsg.CommandValid || !kv.isLeader{
+				kv.executeOp(op)
+
+			}
+			kv.mu.Unlock()
 			continue 
 		}
 		DPrintf("KVSERVER[%v] got APPLY[%v] for index[%v]",kv.me, applyMsg.Command ,applyMsg.CommandIndex)
-		kv.mu.Lock()
-		kv.waitingIndex[applyMsg.CommandIndex] <- true
+		
+		c, _ := kv.waitingIndex[applyMsg.CommandIndex] 
 		kv.mu.Unlock()
+
+		c <- true 
 		DPrintf("KVSERVER[%v] sent through WaitingIndex for index[%v]",kv.me ,applyMsg.CommandIndex)
 		time.Sleep(10 * time.Millisecond)
 
@@ -261,6 +292,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.storage = make(map[string]string)
 	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.hasExecuted = make(map[int64]bool)
+	kv.clientLastCmd = make(map[int64]int64)
 	kv.waitingIndex = make(map[int]chan bool)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	DPrintf("START KVSERVER[%v]",kv.me)

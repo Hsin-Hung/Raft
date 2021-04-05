@@ -10,6 +10,7 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
 
+	currentLeader int 
 	clientID int64
 	serialID int64
 }
@@ -55,7 +56,7 @@ func (ck *Clerk) Get(key string) string {
 
 	for i := 0; ;i++{
 
-		ok := ck.servers[i%len(ck.servers)].Call("KVServer.Get", &args, &reply)
+		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &args, &reply)
 
 		if ok{
 
@@ -64,17 +65,19 @@ func (ck *Clerk) Get(key string) string {
 				return reply.Value
 
 			}else if reply.Err == ErrWrongLeader{
-
 				//log.Printf("KV server response: Wrong Leader Error")
-				continue 
-
+ 
+			}else if reply.Err == ErrTimeOut{
+				log.Printf("KV server response: Timeout Error")
+				
 			}else{
 				log.Printf("KV server response: Key Error")
+				break
 			}
-
-			break 
+			
 		}
-
+		ck.currentLeader++
+		ck.currentLeader %= len(ck.servers)
 	}
 
 	return reply.Value
@@ -103,28 +106,29 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := PutAppendReply{}
 
 	DPrintf("CLIENT[%v] -> PutAppend[%v] -> KVSERVER", ck.clientID, args.SerialID)
-
 	for i := 0; ;i++{
 
-		ok := ck.servers[i%len(ck.servers)].Call("KVServer.PutAppend", &args, &reply)
+		ok := ck.servers[ck.currentLeader].Call("KVServer.PutAppend", &args, &reply)
 
 		if ok{
 
 			if reply.Err == OK{
-				//log.Printf("KV server response: OK")
+			//	log.Printf("KV server response: OK")
 				return 
 			}else if reply.Err == ErrWrongLeader{
-
 				//log.Printf("KV server response: Wrong Leader Error")
-				continue 
 
+			}else if reply.Err == ErrTimeOut{
+				log.Printf("KV server response: Timeout Error")
+				
 			}else{
 				log.Printf("KV server response: Key Error")
-			}
+				break
+			} 
 
-			break 
 		}
-
+		ck.currentLeader++
+		ck.currentLeader %= len(ck.servers)
 
 	}
 
