@@ -41,7 +41,6 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	hasExecuted map [int64]bool
 	clientLastCmd map[int64]int64
 	waitingIndex map [int]chan bool
 	storage map [string]string
@@ -172,8 +171,8 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 			}
 		case "Put":
 			{
-				if _, ok := kv.hasExecuted[op.SerialID+op.ClientID]; !ok{
-					kv.hasExecuted[op.SerialID+op.ClientID] = true 
+				if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || op.SerialID > sid{
+					kv.clientLastCmd[op.ClientID] = op.SerialID
 					kv.storage[op.Key] = op.Value
 
 				}else{
@@ -186,9 +185,9 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 			{
 				if val, ok := kv.storage[op.Key]; ok{
 
-					if _, ok := kv.hasExecuted[op.SerialID+op.ClientID]; !ok{
+					if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || op.SerialID > sid{
 
-						kv.hasExecuted[op.SerialID+op.ClientID] = true 
+						kv.clientLastCmd[op.ClientID] = op.SerialID
 						kv.storage[op.Key] = val + op.Value
 
 					}
@@ -196,9 +195,9 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 
 				}else{
 
-					if _, ok := kv.hasExecuted[op.SerialID+op.ClientID]; !ok{
+					if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || op.SerialID > sid{
 						
-						kv.hasExecuted[op.SerialID+op.ClientID] = true 
+						kv.clientLastCmd[op.ClientID] = op.SerialID
 						kv.storage[op.Key] = op.Value
 
 					}
@@ -292,7 +291,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.storage = make(map[string]string)
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.hasExecuted = make(map[int64]bool)
 	kv.clientLastCmd = make(map[int64]int64)
 	kv.waitingIndex = make(map[int]chan bool)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
