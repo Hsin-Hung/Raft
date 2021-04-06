@@ -68,17 +68,19 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives GET[%v] from CLIENT[%v]",kv.me, args.SerialID, args.ClientID)
 		kv.mu.Lock()
-		kv.waitingIndex[index] = make(chan Op)
-		c := kv.waitingIndex[index]
+		c := make(chan Op, 1)
+		kv.waitingIndex[index] = c
 		kv.mu.Unlock()
 
 		select {
 
 		case appliedOp := <- c:
 			{
+
 				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 				reply.Err = ErrNoKey
 				kv.mu.Lock()
+				delete(kv.waitingIndex, index)
 				if val, success := kv.executeOp(appliedOp); success{
 					DPrintf("KVSERVER[%v] RECEIVES SUCCESS COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 
@@ -93,8 +95,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				kv.mu.Unlock()
 
 			}
-		case <- time.NewTimer(2 * time.Second).C:
+		case <- time.After(1 * time.Second):
 			DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
+			kv.mu.Lock()
+			delete(kv.waitingIndex, index)
+			kv.mu.Unlock()
 			reply.Err = ErrTimeOut
 
 		}
@@ -129,8 +134,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives %v[%v] from CLIENT[%v]",kv.me, args.Op, args.SerialID, args.ClientID)
 		kv.mu.Lock()
-		kv.waitingIndex[index] = make(chan Op)
-		c := kv.waitingIndex[index]
+		c := make(chan Op, 1)
+		kv.waitingIndex[index] = c
 		kv.mu.Unlock()
 
 		select {
@@ -139,16 +144,19 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 
 				reply.Err = ErrWrongLeader
+				kv.mu.Lock()
 				if appliedOp==op{
 					reply.Err = OK
-					kv.mu.Lock()
 					kv.executeOp(appliedOp)
-					kv.mu.Unlock()
+					delete(kv.waitingIndex, index)
 				}
+				kv.mu.Unlock()
 
-
-			case <- time.NewTimer(2 * time.Second).C:
+			case <- time.After(1 * time.Second):
 				DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
+				kv.mu.Lock()
+				delete(kv.waitingIndex, index)
+				kv.mu.Unlock()
 				reply.Err = ErrTimeOut
 
 		}
@@ -182,11 +190,10 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 			}
 		case "Put":
 			{
-				if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || op.SerialID > sid{
+				if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
 					kv.clientLastCmd[op.ClientID] = op.SerialID
 					kv.storage[op.Key] = op.Value
 
-				}else{
 				}
 				
 				return "", true
@@ -196,7 +203,7 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 			{
 				if _, ok := kv.storage[op.Key]; ok{
 
-					if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || op.SerialID > sid{
+					if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
 
 						kv.clientLastCmd[op.ClientID] = op.SerialID
 						kv.storage[op.Key] += op.Value
@@ -206,7 +213,7 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 
 				}else{
 
-					if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || op.SerialID > sid{
+					if sid, ok := kv.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
 						
 						kv.clientLastCmd[op.ClientID] = op.SerialID
 						kv.storage[op.Key] = op.Value
@@ -227,7 +234,7 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 
 func (kv *KVServer) applyChListener(){
 	
-	for {
+	for !kv.killed(){
 		
 		DPrintf("KVSERVER[%v] waiting for APPLY",kv.me)
 		applyMsg := <- kv.applyCh
@@ -244,9 +251,6 @@ func (kv *KVServer) applyChListener(){
 
 		if checkLeader && ok{
 			c <- op
-			kv.mu.Lock()
-			delete(kv.waitingIndex, applyMsg.CommandIndex)
-			kv.mu.Unlock()
 		}else{
 
 			kv.mu.Lock()

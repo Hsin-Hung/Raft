@@ -68,7 +68,7 @@ func (ck *Clerk) Get(key string) string {
 				//log.Printf("KV server response: Wrong Leader Error")
  
 			}else if reply.Err == ErrTimeOut{
-				log.Printf("KV server response: Timeout Error")
+				log.Printf("KV server[%v] response: Timeout Error",ck.currentLeader)
 				
 			}else{
 				log.Printf("KV server response: Key Error")
@@ -119,7 +119,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				//log.Printf("KV server response: Wrong Leader Error")
 
 			}else if reply.Err == ErrTimeOut{
-				log.Printf("KV server response: Timeout Error")
+				log.Printf("KV server[%v] response: Timeout Error",ck.currentLeader)
 				
 			}else{
 				log.Printf("KV server response: Key Error")
