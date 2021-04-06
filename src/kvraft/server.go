@@ -31,6 +31,13 @@ type Op struct {
 
 }
 
+type OpData struct{
+
+	ErrResult Err
+	Value string 
+
+}
+
 type KVServer struct {
 	mu      sync.Mutex
 	me      int
@@ -42,7 +49,7 @@ type KVServer struct {
 
 	// Your definitions here.
 	clientLastCmd map[int64]int64
-	waitingIndex map [int]chan Op
+	waitingIndex map [int]chan OpData
 	storage map [string]string
 	isLeader bool
 	term int 
@@ -68,30 +75,21 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives GET[%v] from CLIENT[%v]",kv.me, args.SerialID, args.ClientID)
 		kv.mu.Lock()
-		c := make(chan Op, 1)
+		c := make(chan OpData, 1)
 		kv.waitingIndex[index] = c
 		kv.mu.Unlock()
 
 		select {
 
-		case appliedOp := <- c:
+		case opData := <- c:
 			{
-
 				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
-				reply.Err = ErrNoKey
+
+				reply.Err = opData.ErrResult
+				reply.Value = opData.Value
+				
 				kv.mu.Lock()
 				delete(kv.waitingIndex, index)
-				if val, success := kv.executeOp(appliedOp); success{
-					DPrintf("KVSERVER[%v] RECEIVES SUCCESS COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
-
-					if appliedOp==op{
-						reply.Err = OK
-						reply.Value = val
-					}else{
-						reply.Err = ErrWrongLeader
-					}
-
-				}
 				kv.mu.Unlock()
 
 			}
@@ -134,22 +132,18 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives %v[%v] from CLIENT[%v]",kv.me, args.Op, args.SerialID, args.ClientID)
 		kv.mu.Lock()
-		c := make(chan Op, 1)
+		c := make(chan OpData, 1)
 		kv.waitingIndex[index] = c
 		kv.mu.Unlock()
 
 		select {
 
-			case appliedOp := <- c:
+			case opData := <- c:
 				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 
-				reply.Err = ErrWrongLeader
+				reply.Err = opData.ErrResult
 				kv.mu.Lock()
-				if appliedOp==op{
-					reply.Err = OK
-					kv.executeOp(appliedOp)
-					delete(kv.waitingIndex, index)
-				}
+				delete(kv.waitingIndex, index)
 				kv.mu.Unlock()
 
 			case <- time.After(1 * time.Second):
@@ -170,8 +164,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 }
 
-func (kv *KVServer) executeOp(op Op) (string, bool){
-
+func (kv *KVServer) executeOp(op Op) (string, Err){
 
 	switch op.OpType{
 
@@ -179,11 +172,11 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 			{
 				if val, ok := kv.storage[op.Key]; ok{
 
-					return val, true
+					return val, OK
 
 				}else{
 
-					return "", false 
+					return "", ErrNoKey
 
 				}
 				
@@ -196,7 +189,7 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 
 				}
 				
-				return "", true
+				return "", OK
 			}
 
 		case "Append":
@@ -221,13 +214,13 @@ func (kv *KVServer) executeOp(op Op) (string, bool){
 					}
 
 				}
-				return "", true
+				return "", OK
 
 			}
 
 	}
 
-	return "", false
+	return "", ErrWrongLeader
 
 }
 
@@ -247,18 +240,14 @@ func (kv *KVServer) applyChListener(){
 		kv.mu.Lock()
 		_, checkLeader := kv.rf.GetState()
 		c, ok := kv.waitingIndex[applyMsg.CommandIndex]
+		val, err := kv.executeOp(op)
 		kv.mu.Unlock()
 
 		if checkLeader && ok{
-			c <- op
-		}else{
-
-			kv.mu.Lock()
-			if ok{
-				delete(kv.waitingIndex, applyMsg.CommandIndex)
+			c <- OpData{
+				ErrResult: err,
+				Value: val,
 			}
-			kv.executeOp(op)
-			kv.mu.Unlock()
 		}
 
 		DPrintf("KVSERVER[%v] sent through WaitingIndex for index[%v]",kv.me ,applyMsg.CommandIndex)
@@ -315,7 +304,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.storage = make(map[string]string)
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.clientLastCmd = make(map[int64]int64)
-	kv.waitingIndex = make(map[int]chan Op)
+	kv.waitingIndex = make(map[int]chan OpData)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	DPrintf("START KVSERVER[%v]",kv.me)
 	// You may need initialization code here.
