@@ -990,7 +990,7 @@ func (rf *Raft) startMainRoutine() {
 
 			select{
 
-			case <- time.After(100 * time.Millisecond):
+			case <- time.After(130 * time.Millisecond):
 				break
 			case <- rf.skipSleepCh:
 				break 
@@ -1048,6 +1048,7 @@ func (rf *Raft) startCandidateElection() {
 	//electionStartTime := time.Now()
 	timeLimit := rf.getElectionTimeoutDuration()
 	hasTimedOut := false
+	term := rf.currentTerm
 	rf.mu.Unlock()
 	cond := sync.NewCond(&rf.mu)
 
@@ -1086,7 +1087,7 @@ for processedVotes!=len(rf.peers) && totalVotes < majority && rf.state == Candid
 }
 
 // if candidate gets majority of votes, then beomces a leader 
-if rf.state == Candidate && totalVotes >= majority{
+if rf.state == Candidate && totalVotes >= majority && term == rf.currentTerm{
 		rf.convert2Leader()
 }
 
