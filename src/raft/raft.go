@@ -749,7 +749,7 @@ func (rf *Raft) getElectionTimeoutDuration() time.Duration {
 // randomize the election time duration 
 func (rf *Raft) randomizeTimerDuration(){
 
-	rf.electionTimeoutDur = rand.Intn(250) + 400
+	rf.electionTimeoutDur = rand.Intn(300) + 150
 
 }
 
@@ -995,33 +995,15 @@ func (rf *Raft) startMainRoutine() {
 
 		case Leader:
 			rf.startLeaderHeartBeats()
-			//time.Sleep(100*time.Millisecond)
-			
-			//rf.mu.Lock()
 
 			select{
 
-			case <- time.After(100 * time.Millisecond):
+			case <- time.After(150 * time.Millisecond):
 				break
 			case <- rf.skipSleepCh:
 				break 
 			}
 
-			// if !rf.skipSleep{
-
-			// 	go func(){
-			// 		time.Sleep(100*time.Millisecond)			
-			// 		rf.skipSleepCond.Signal()
-			// 	}()
-				
-			// 	rf.skipSleepCond.Wait()
-			// 	rf.skipSleep = false 
-			// 	rf.mu.Unlock()
-
-			// }else{
-			// 	rf.skipSleep = false 
-			// 	rf.mu.Unlock()
-			// }
 			break
 		case Candidate:
 			rf.startCandidateElection()
@@ -1188,11 +1170,6 @@ func (rf *Raft) sendAppendEntries(server int){
 	args := AppendEntriesArgs{}
 	reply := AppendEntriesReply{}	
 	rf.mu.Lock()
-
-	// if rf.processing[server] {
-	// 	rf.mu.Unlock()
-	// 	return 
-	// }
 	
 		// If last log index ≥ nextIndex for a follower
 		args.Entries = make([] LogEntry, 0)
@@ -1213,14 +1190,9 @@ func (rf *Raft) sendAppendEntries(server int){
 	args.PrevLogIndex = rf.nextIndex[server]-1
 	args.PrevLogTerm = rf.getTermAtIndex(args.PrevLogIndex)
 
-	// rf.processing[server] = true
 	rf.mu.Unlock()
 
 	ok := rf.sendAppendEntriesRPC(server, &args, &reply)
-
-	// rf.mu.Lock()
-	// rf.processing[server] = false 
-	// rf.mu.Unlock()
 
 	if ok{
 
@@ -1279,9 +1251,6 @@ func (rf *Raft) sendAppendEntries(server int){
 
 		}	
 
-		//rf.matchIndex[server] = rf.nextIndex[server] - 1
-		// rf.skipSleep = true 
-		// rf.skipSleepCond.Signal()
 
 	}
 }
