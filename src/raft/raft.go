@@ -264,11 +264,24 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	// 	but different terms), delete the existing entry and all that
 	// 	follow it 
 
-	for i := range args.Entries{
+	for i, val := range args.Entries{
 
-		if args.PrevLogIndex+1+i >= rf.getLogLen() || args.Entries[i].Term != rf.log[rf.convert2LogIndex(args.PrevLogIndex+1+i)].Term{
-			rf.log = append(rf.log[:rf.convert2LogIndex(args.PrevLogIndex+1+i)], args.Entries[i:]...)
-			break
+		entryIndex := args.PrevLogIndex+1+i
+
+		if rf.hasIndex(entryIndex){
+
+			if val.Term != rf.getTermAtIndex(entryIndex){
+
+				rf.log = rf.log[:rf.convert2LogIndex(entryIndex)]
+				rf.log = append(rf.log, args.Entries[i:]...)
+				break 
+			}
+
+
+		}else{
+
+			rf.log = append(rf.log, val)
+
 		}
 
 	}
@@ -885,6 +898,16 @@ func min(first int, second int) int{
 
 }
 
+func max(first int, second int) int{
+
+	if first > second{
+		return first
+	}else{
+		return second
+	}
+
+}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -1200,7 +1223,7 @@ func (rf *Raft) sendAppendEntries(server int){
 		}
 
 
-		if reply.Success && reply.Term == rf.currentTerm{
+		if reply.Success{
 			rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
 			rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
 			rf.updateCommitIndex()
@@ -1214,11 +1237,15 @@ func (rf *Raft) sendAppendEntries(server int){
 			found := false
 
 			// if an entry is found with this conflict term
-			for i := len(rf.log)-1 ; i>0 ; i--{
+			for i := len(rf.log)-1 ; i>=0 ; i--{
+
+				if rf.log[i].Term < reply.ConflictTerm{
+					break 
+				}
 
 				if rf.log[i].Term == reply.ConflictTerm{
 
-					rf.nextIndex[server] = min(rf.convert2ActualIndex(i), reply.ConflictIndex) 
+					rf.nextIndex[server] = rf.convert2ActualIndex(i)
 					found = true
 					break
 				}
@@ -1229,6 +1256,7 @@ func (rf *Raft) sendAppendEntries(server int){
 			if !found{
 				rf.nextIndex[server] = reply.ConflictIndex;
 			}
+			rf.nextIndex[server] = max(rf.nextIndex[server], 1)
 
 		}else{
 
@@ -1236,7 +1264,7 @@ func (rf *Raft) sendAppendEntries(server int){
 
 		}	
 
-		rf.matchIndex[server] = rf.nextIndex[server] - 1
+		//rf.matchIndex[server] = rf.nextIndex[server] - 1
 		// rf.skipSleep = true 
 		// rf.skipSleepCond.Signal()
 
