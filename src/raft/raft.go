@@ -84,8 +84,6 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
-	processing []bool
-
 	lastIncludedIndex int
 	lastIncludedTerm int 
 
@@ -97,8 +95,6 @@ type Raft struct {
 	
 	snapshotCh chan SnapshotRequest   // for sending new snap shots
 
-	skipSleep bool
-	skipSleepCond *sync.Cond 
 	skipSleepCh chan bool
 
 	electionTimeoutDur int				// election time out duration  
@@ -940,8 +936,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([] int, len(peers))
 	rf.matchIndex = make([] int, len(peers))
 
-	rf.processing = make([] bool, len(peers))
-
 	rf.lastIncludedIndex = -1
 	rf.lastIncludedTerm = -1
 
@@ -950,8 +944,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyMsgCond = sync.NewCond(&rf.mu)
 
-	rf.skipSleep = false
-	rf.skipSleepCond = sync.NewCond(&rf.mu)
 	rf.skipSleepCh = make(chan bool)
 
 	rf.snapshotCh = make(chan SnapshotRequest)
