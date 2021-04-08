@@ -84,8 +84,12 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
+	processing []bool
+
 	lastIncludedIndex int
 	lastIncludedTerm int 
+
+	outstandingRPC int
 
 	state int      
 
@@ -201,10 +205,6 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.killed(){
-		return
-	}
-
 	reply.Success = true
 	reply.Term = rf.currentTerm
 	reply.ConflictIndex = -1
@@ -232,15 +232,19 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
     // whose term matches prevLogTerm
+	
 
 	if args.PrevLogIndex != rf.lastIncludedIndex{
-		if args.PrevLogIndex>=rf.getLogLen(){
+
+		entry, ok := rf.getLogAtIndex(args.PrevLogIndex)
+
+		if !ok{
 
 			reply.ConflictIndex = rf.getLogLen()
 			reply.Success = false
 			return
 	
-		}else if (args.PrevLogIndex>=0 && rf.log[rf.convert2LogIndex(args.PrevLogIndex)].Term != args.PrevLogTerm){
+		}else if (ok && entry.Term != args.PrevLogTerm){
 	
 			reply.ConflictTerm = rf.log[rf.convert2LogIndex(args.PrevLogIndex)].Term
 	
@@ -398,7 +402,7 @@ type InstallSnapshotReply struct{
 // RPC handler for installing snapshots to keep followers up to date with the leader snap shot 
 //
 func (rf *Raft) InstallSnapshotRPC(args *InstallSnapshotArgs, reply *InstallSnapshotReply){
-
+	log.Printf("ENTER SNAPSHOTLOGIC")
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -512,10 +516,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	
-	if rf.killed(){
-		return 
-	}
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -607,9 +607,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
 
-	if rf.killed(){	
-		return index, term, isLeader
-	}
 	// Your code here (2B).
 	if isLeader{
 		newEntry := LogEntry{
@@ -623,10 +620,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me] = index + 1
 		rf.persist()
-		//rf.skipSleep = true 
-		// go func(){
-		// 	rf.skipSleepCh <- true 
-		// }()
+		go func(){
+			rf.skipSleepCh <- true
+		}()
+
 	}
 
 	return index, term, isLeader
@@ -685,13 +682,17 @@ func (rf *Raft) applyCommittedEntries(){
 	for !rf.killed(){
 
 		rf.mu.Lock()
-		rf.applyMsgCond.Wait()
+
+		for rf.lastApplied >= rf.commitIndex{
+			rf.applyMsgCond.Wait()
+		}
+		
 		lastApplied := rf.lastApplied
 		commitIndex := rf.commitIndex		
 		
 		// for sending snap shots to the service and apply the snapshot 
 		if rf.lastApplied < rf.lastIncludedIndex{
-	
+			log.Printf("ENTER SNAPSHOTLOGIC")
 			newApplyMsg := ApplyMsg{
 				CommandValid  : false,
 				SnapshotValid : true,
@@ -712,7 +713,8 @@ func (rf *Raft) applyCommittedEntries(){
 			for i:=rf.lastApplied + 1;i<= rf.commitIndex ; i++ {
 				entry, ok := rf.getLogAtIndex(i)
 
-				if !ok{
+				if !ok || entry.Command == nil{
+					//log.Printf("ok[%v], entry command[%v]",ok, entry.Command)
 					continue 
 				}
 				newApplyMsg := ApplyMsg{
@@ -827,7 +829,6 @@ func (rf *Raft) getTermAtIndex(index int) int{
 
 	return rf.lastIncludedTerm
 
-
 }
 
 // get the log entry at a given index 
@@ -939,6 +940,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([] int, len(peers))
 	rf.matchIndex = make([] int, len(peers))
 
+	rf.processing = make([] bool, len(peers))
+
 	rf.lastIncludedIndex = -1
 	rf.lastIncludedTerm = -1
 
@@ -958,7 +961,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	//restore the snapshot when coming back from a crash 
 	if rf.lastApplied < rf.lastIncludedIndex{
-
+		log.Printf("ENTER SNAPSHOTLOGIC")
 		newApplyMsg := ApplyMsg{
 			CommandValid  : false,
 			SnapshotValid : true,
@@ -974,7 +977,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	go rf.startMainRoutine()
 	go rf.applyCommittedEntries()
-	go rf.snapshotRoutine()
+	//go rf.snapshotRoutine() not needed for 3A
 
 	return rf
 }
@@ -992,16 +995,17 @@ func (rf *Raft) startMainRoutine() {
 
 		case Leader:
 			rf.startLeaderHeartBeats()
-			time.Sleep(100*time.Millisecond)
+			//time.Sleep(100*time.Millisecond)
+			
 			//rf.mu.Lock()
 
-			// select {
-			// case <- time.After(100 * time.Millisecond):
-			// 	break
-			// case <- rf.skipSleepCh:
-			// 	break
-			// }
+			select{
 
+			case <- time.After(100 * time.Millisecond):
+				break
+			case <- rf.skipSleepCh:
+				break 
+			}
 
 			// if !rf.skipSleep{
 
@@ -1157,7 +1161,7 @@ func (rf *Raft) startLeaderHeartBeats() {
 
 	for i := range rf.peers {
 		rf.mu.Lock()
-		if rf.state != Leader || rf.killed(){
+		if rf.state != Leader{
 			rf.mu.Unlock()
 			return
 		}
@@ -1184,6 +1188,12 @@ func (rf *Raft) sendAppendEntries(server int){
 	args := AppendEntriesArgs{}
 	reply := AppendEntriesReply{}	
 	rf.mu.Lock()
+
+	// if rf.processing[server] {
+	// 	rf.mu.Unlock()
+	// 	return 
+	// }
+	
 		// If last log index ≥ nextIndex for a follower
 		args.Entries = make([] LogEntry, 0)
 		for i:=rf.nextIndex[server]; i<=rf.getLastIndex(); i++{
@@ -1203,9 +1213,14 @@ func (rf *Raft) sendAppendEntries(server int){
 	args.PrevLogIndex = rf.nextIndex[server]-1
 	args.PrevLogTerm = rf.getTermAtIndex(args.PrevLogIndex)
 
-
+	// rf.processing[server] = true
 	rf.mu.Unlock()
+
 	ok := rf.sendAppendEntriesRPC(server, &args, &reply)
+
+	// rf.mu.Lock()
+	// rf.processing[server] = false 
+	// rf.mu.Unlock()
 
 	if ok{
 
@@ -1273,6 +1288,8 @@ func (rf *Raft) sendAppendEntries(server int){
 
 
 func (rf *Raft) sendInstallSnapshot(server int){
+
+	log.Printf("ENTER SNAPSHOTLOGIC")
 
 	rf.mu.Lock()
 	installSnapshotArgs := InstallSnapshotArgs{
