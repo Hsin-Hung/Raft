@@ -48,11 +48,9 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	clientLastCmd map[int64]int64
-	waitingIndex map [int]chan OpData
-	storage map [string]string
-	isLeader bool
-	term int 
+	clientLastCmd map[int64]int64 // this will deal with duplicate command, it stores the most recent cmd for each client 
+	waitingIndex map [int]chan OpData	// this is the channel for sending back cmd execution for each index 
+	storage map [string]string // database for kvserver 
 
 }
 
@@ -66,11 +64,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		SerialID: args.SerialID,
 	}
 
+	// start this cmd by commiting in raft first
 	index, _, isLeader := kv.rf.Start(op)
-	// kv.mu.Lock()
-	// kv.term = term
-	// kv.isLeader = isLeader 
-	// kv.mu.Unlock()
 
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives GET[%v] from CLIENT[%v]",kv.me, args.SerialID, args.ClientID)
@@ -122,12 +117,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		SerialID: args.SerialID,
 	}
 
+	// start this cmd by commiting in raft first 
 	index, _, isLeader := kv.rf.Start(op)
-
-	// kv.mu.Lock()
-	// kv.term = term
-	// kv.isLeader = isLeader 
-	// kv.mu.Unlock()
 
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives %v[%v] from CLIENT[%v]",kv.me, args.Op, args.SerialID, args.ClientID)
@@ -164,6 +155,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 }
 
+// execute the given command on kvserver 
 func (kv *KVServer) executeOp(op Op) (string, Err){
 
 	switch op.OpType{
@@ -224,7 +216,7 @@ func (kv *KVServer) executeOp(op Op) (string, Err){
 
 }
 
-
+//routine to listen for applied cmd from raft 
 func (kv *KVServer) applyChListener(){
 	
 	for !kv.killed(){
@@ -232,6 +224,8 @@ func (kv *KVServer) applyChListener(){
 		DPrintf("KVSERVER[%v] waiting for APPLY",kv.me)
 		applyMsg := <- kv.applyCh
 		DPrintf("KVSERVER[%v] got APPLY[%v] for index[%v]",kv.me, applyMsg.Command ,applyMsg.CommandIndex)
+
+		//ignore all non-valid cmd 
 		if !applyMsg.CommandValid{
 			continue 
 		}
