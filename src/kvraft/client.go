@@ -4,7 +4,7 @@ import "6.824/labrpc"
 import "crypto/rand"
 import "math/big"
 import "sync/atomic"
-import "log"
+//import "log"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
@@ -50,12 +50,12 @@ func (ck *Clerk) Get(key string) string {
 		ClientID : ck.clientID,
 		SerialID : atomic.AddInt64(&ck.serialID,1),
 	}
-	reply := GetReply{}
+	
 
 	DPrintf("CLIENT[%v] -> Get[%v] -> KVSERVER", ck.clientID, args.SerialID)
 
 	for i := 0; ;i++{
-
+		reply := GetReply{}
 		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &args, &reply)
 
 		if ok{
@@ -71,7 +71,7 @@ func (ck *Clerk) Get(key string) string {
 				//log.Printf("KV server[%v] response: Timeout Error",ck.currentLeader)
 				
 			}else{
-				log.Printf("KV server response: Key Error")
+				//log.Printf("KV server response: Key Error")
 				break
 			}
 			
@@ -80,7 +80,7 @@ func (ck *Clerk) Get(key string) string {
 		ck.currentLeader %= len(ck.servers)
 	}
 
-	return reply.Value
+	return ""
 }
 
 //
@@ -103,11 +103,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ClientID : ck.clientID,
 		SerialID : atomic.AddInt64(&ck.serialID,1),
 	}
-	reply := PutAppendReply{}
+	
 
 	DPrintf("CLIENT[%v] -> PutAppend[%v] -> KVSERVER", ck.clientID, args.SerialID)
 	for i := 0; ;i++{
-
+		reply := PutAppendReply{}
 		ok := ck.servers[ck.currentLeader].Call("KVServer.PutAppend", &args, &reply)
 
 		if ok{
@@ -119,10 +119,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				//log.Printf("KV server response: Wrong Leader Error")
 
 			}else if reply.Err == ErrTimeOut{
-				log.Printf("KV server[%v] response: Timeout Error",ck.currentLeader)
+				//log.Printf("KV server[%v] response: Timeout Error",ck.currentLeader)
 				
 			}else{
-				log.Printf("KV server response: Key Error")
+				//log.Printf("KV server response: Key Error")
 				break
 			} 
 
