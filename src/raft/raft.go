@@ -93,6 +93,10 @@ type Raft struct {
 	
 	snapshotCh chan SnapshotRequest   // for sending new snap shots
 
+	skipSleep bool
+	skipSleepCond *sync.Cond 
+	skipSleepCh chan bool
+
 	electionTimeoutDur int				// election time out duration  
 
 	lastTimestamp time.Time     // keep track of the last time server receives leader heart beat 
@@ -196,7 +200,6 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
 
 	if rf.killed(){
 		return
@@ -270,7 +273,7 @@ func (rf *Raft) AppendEntryHandler(args *AppendEntriesArgs, reply *AppendEntries
 
 	}
 
-
+	rf.persist()
 	// 5. If leaderCommit > commitIndex, set commitIndex =
 	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex{
@@ -495,7 +498,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
 
 	
 	if rf.killed(){
@@ -526,6 +528,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if (rf.voteFor == -1 || rf.voteFor == args.CandidateID) && (higherTermCheck || higherIndexCheck){
 		rf.voteFor = args.CandidateID
 		reply.VoteGranted = true
+		rf.persist()
 		rf.lastTimestamp = time.Now()
 	}
 
@@ -591,7 +594,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
 
-	if rf.killed(){
+	if rf.killed(){	
 		return index, term, isLeader
 	}
 	// Your code here (2B).
@@ -607,6 +610,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me] = index + 1
 		rf.persist()
+		//rf.skipSleep = true 
+		// go func(){
+		// 	rf.skipSleepCh <- true 
+		// }()
 	}
 
 	return index, term, isLeader
@@ -690,7 +697,11 @@ func (rf *Raft) applyCommittedEntries(){
 		if lastApplied < commitIndex{
 
 			for i:=rf.lastApplied + 1;i<= rf.commitIndex ; i++ {
-				entry := rf.log[rf.convert2LogIndex(i)]
+				entry, ok := rf.getLogAtIndex(i)
+
+				if !ok{
+					continue 
+				}
 				newApplyMsg := ApplyMsg{
 	
 					CommandValid: entry.CommandValid,
@@ -733,6 +744,7 @@ func (rf *Raft) convert2Follower(term int){
 	rf.state = Follower
 	rf.voteFor = -1
 	rf.currentTerm = term
+	rf.persist()
 	rf.randomizeTimerDuration()
 
 }
@@ -766,7 +778,7 @@ func (rf *Raft) leaderStateInit(){
 // check if the log has the given index
 func (rf *Raft) hasIndex(index int) bool{
 
-	return index > rf.lastIncludedIndex &&  len(rf.log) > (index - rf.lastIncludedIndex - 1)
+	return rf.convert2LogIndex(index) >= 0 &&  len(rf.log) > rf.convert2LogIndex(index)
 
 }
 
@@ -789,6 +801,19 @@ func (rf *Raft) getLastTerm() int{
 		return rf.log[len(rf.log)-1].Term
 	}
 	return rf.lastIncludedTerm
+
+}
+
+func (rf *Raft) getTermAtIndex(index int) int{
+
+	if rf.hasIndex(index){
+
+		return rf.log[index - rf.lastIncludedIndex - 1].Term
+
+	}
+
+	return rf.lastIncludedTerm
+
 
 }
 
@@ -899,6 +924,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyMsgCond = sync.NewCond(&rf.mu)
 
+	rf.skipSleep = false
+	rf.skipSleepCond = sync.NewCond(&rf.mu)
+	rf.skipSleepCh = make(chan bool)
+
 	rf.snapshotCh = make(chan SnapshotRequest)
 
 	// initialize from state persisted before a crash
@@ -940,7 +969,32 @@ func (rf *Raft) startMainRoutine() {
 
 		case Leader:
 			rf.startLeaderHeartBeats()
-			time.Sleep(time.Millisecond * 100)// heartbeat interval 
+			time.Sleep(100*time.Millisecond)
+			//rf.mu.Lock()
+
+			// select {
+			// case <- time.After(100 * time.Millisecond):
+			// 	break
+			// case <- rf.skipSleepCh:
+			// 	break
+			// }
+
+
+			// if !rf.skipSleep{
+
+			// 	go func(){
+			// 		time.Sleep(100*time.Millisecond)			
+			// 		rf.skipSleepCond.Signal()
+			// 	}()
+				
+			// 	rf.skipSleepCond.Wait()
+			// 	rf.skipSleep = false 
+			// 	rf.mu.Unlock()
+
+			// }else{
+			// 	rf.skipSleep = false 
+			// 	rf.mu.Unlock()
+			// }
 			break
 		case Candidate:
 			rf.startCandidateElection()
@@ -1053,7 +1107,6 @@ func (rf *Raft) sendRequestVote(server int) int {
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		defer rf.persist()
 
 		// outdated rpc 
 		if args.Term != rf.currentTerm{
@@ -1125,12 +1178,7 @@ func (rf *Raft) sendAppendEntries(server int){
 	args.LeaderID = rf.me
 	args.LeaderCommit = rf.commitIndex   
 	args.PrevLogIndex = rf.nextIndex[server]-1
-
-	if args.PrevLogIndex == rf.lastIncludedIndex{
-		args.PrevLogTerm = rf.lastIncludedTerm
-	}else{
-		args.PrevLogTerm = rf.log[rf.convert2LogIndex(args.PrevLogIndex)].Term
-	}
+	args.PrevLogTerm = rf.getTermAtIndex(args.PrevLogIndex)
 
 
 	rf.mu.Unlock()
@@ -1140,7 +1188,6 @@ func (rf *Raft) sendAppendEntries(server int){
 
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		defer rf.persist()
 
 		// outdated rpc 
 		if args.Term != rf.currentTerm{ 
@@ -1190,6 +1237,8 @@ func (rf *Raft) sendAppendEntries(server int){
 		}	
 
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
+		// rf.skipSleep = true 
+		// rf.skipSleepCond.Signal()
 
 	}
 }
