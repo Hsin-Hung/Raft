@@ -66,11 +66,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		SerialID: args.SerialID,
 	}
 
-	index, term, isLeader := kv.rf.Start(op)
-	kv.mu.Lock()
-	kv.term = term
-	kv.isLeader = isLeader 
-	kv.mu.Unlock()
+	index, _, isLeader := kv.rf.Start(op)
+	// kv.mu.Lock()
+	// kv.term = term
+	// kv.isLeader = isLeader 
+	// kv.mu.Unlock()
 
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives GET[%v] from CLIENT[%v]",kv.me, args.SerialID, args.ClientID)
@@ -93,7 +93,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				kv.mu.Unlock()
 
 			}
-		case <- time.After(1 * time.Second):
+		case <- time.After(1000 * time.Millisecond):
 			DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 			kv.mu.Lock()
 			delete(kv.waitingIndex, index)
@@ -122,12 +122,12 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		SerialID: args.SerialID,
 	}
 
-	index, term, isLeader := kv.rf.Start(op)
+	index, _, isLeader := kv.rf.Start(op)
 
-	kv.mu.Lock()
-	kv.term = term
-	kv.isLeader = isLeader 
-	kv.mu.Unlock()
+	// kv.mu.Lock()
+	// kv.term = term
+	// kv.isLeader = isLeader 
+	// kv.mu.Unlock()
 
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives %v[%v] from CLIENT[%v]",kv.me, args.Op, args.SerialID, args.ClientID)
@@ -146,7 +146,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				delete(kv.waitingIndex, index)
 				kv.mu.Unlock()
 
-			case <- time.After(1 * time.Second):
+			case <- time.After(1000 * time.Millisecond):
 				DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
 				kv.mu.Lock()
 				delete(kv.waitingIndex, index)
@@ -237,8 +237,9 @@ func (kv *KVServer) applyChListener(){
 		}
 
 		op := applyMsg.Command.(Op)
-		kv.mu.Lock()
 		_, checkLeader := kv.rf.GetState()
+		
+		kv.mu.Lock()
 		c, ok := kv.waitingIndex[applyMsg.CommandIndex]
 		val, err := kv.executeOp(op)
 		kv.mu.Unlock()
