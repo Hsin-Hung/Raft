@@ -990,7 +990,7 @@ func (rf *Raft) startMainRoutine() {
 
 			select{
 
-			case <- time.After(150 * time.Millisecond):
+			case <- time.After(100 * time.Millisecond):
 				break
 			case <- rf.skipSleepCh:
 				break 
@@ -1185,6 +1185,13 @@ func (rf *Raft) sendAppendEntries(server int){
 	rf.mu.Unlock()
 
 	ok := rf.sendAppendEntriesRPC(server, &args, &reply)
+
+	rf.mu.Lock()
+	if rf.state != Leader{
+		rf.mu.Unlock()
+		return
+	}
+	rf.mu.Unlock()
 
 	if ok{
 
