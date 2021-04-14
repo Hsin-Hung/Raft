@@ -8,6 +8,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"bytes"
 )
 
 const Debug = false
@@ -51,6 +52,8 @@ type KVServer struct {
 	clientLastCmd map[int64]int64 // this will deal with duplicate command, it stores the most recent cmd for each client 
 	waitingIndex map [int]chan OpData	// this is the channel for sending back cmd execution for each index 
 	storage map [string]string // database for kvserver 
+
+	lastIncludedIndex int
 
 }
 
@@ -225,6 +228,32 @@ func (kv *KVServer) applyChListener(){
 		applyMsg := <- kv.applyCh
 		DPrintf("KVSERVER[%v] got APPLY[%v] for index[%v]",kv.me, applyMsg.Command ,applyMsg.CommandIndex)
 
+		if applyMsg.SnapshotValid{
+
+			data := applyMsg.Snapshot
+			if applyMsg.SnapshotIndex <=-1 || data == nil || len(data) < 1{ // bootstrap without any state?
+				continue
+			}
+			r := bytes.NewBuffer(data)
+			d := labgob.NewDecoder(r)
+		
+			storage := make(map[string]string)
+			clientLastCMD := make(map[int64]int64)
+		
+			if d.Decode(&storage) != nil ||
+			d.Decode(&clientLastCMD) != nil {
+				log.Printf("error decode")
+				continue
+			}
+		
+			kv.mu.Lock()
+			kv.storage = storage
+			kv.clientLastCmd = clientLastCMD
+			kv.lastIncludedIndex = applyMsg.SnapshotIndex
+			kv.mu.Unlock()
+			
+			continue 
+		}
 		//ignore all non-valid cmd 
 		if !applyMsg.CommandValid{
 			continue 
@@ -236,7 +265,12 @@ func (kv *KVServer) applyChListener(){
 		kv.mu.Lock()
 		c, ok := kv.waitingIndex[applyMsg.CommandIndex]
 		val, err := kv.executeOp(op)
+		kv.lastIncludedIndex = applyMsg.CommandIndex
 		kv.mu.Unlock()
+		if kv.rf.RaftStateSize() >= kv.maxraftstate && kv.maxraftstate != -1{
+			go kv.saveSnapShot()
+		}
+		
 
 		if checkLeader && ok{
 			c <- OpData{
@@ -250,6 +284,49 @@ func (kv *KVServer) applyChListener(){
 	}
 
 }
+
+
+
+func (kv *KVServer) saveSnapShot(){
+
+	kv.mu.Lock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.storage)
+	e.Encode(kv.clientLastCmd)
+	index := kv.lastIncludedIndex
+	data := w.Bytes()
+	kv.mu.Unlock()
+	kv.rf.Snapshot(index, data)
+
+}
+
+func (kv *KVServer) readSnapShot(){
+	index := kv.rf.GetLastIncludedIndex()
+	data := kv.rf.ReadSnapshot()
+	if index <=-1 || data == nil || len(data) < 1{ // bootstrap without any state?
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	storage := make(map[string]string)
+	clientLastCMD := make(map[int64]int64)
+
+	if d.Decode(&storage) != nil ||
+	d.Decode(&clientLastCMD) != nil {
+		log.Printf("error decode")
+		return
+	}
+
+	kv.mu.Lock()
+	kv.storage = storage
+	kv.clientLastCmd = clientLastCMD
+	kv.lastIncludedIndex = index 
+	kv.mu.Unlock()
+}
+
+
 
 //
 // the tester calls Kill() when a KVServer instance won't
@@ -302,6 +379,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.waitingIndex = make(map[int]chan OpData)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	DPrintf("START KVSERVER[%v]",kv.me)
+	kv.readSnapShot()
 	// You may need initialization code here.
 	go kv.applyChListener()
 
