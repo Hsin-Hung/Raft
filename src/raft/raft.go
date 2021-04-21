@@ -80,15 +80,13 @@ type Raft struct {
 
 	commitIndex int
 	lastApplied int
-	installSnapshotWait []bool
-	appendEntryWait []bool
+	installSnapshotWait []bool	  // for waiting for install snapshot to complete before proceeding
+	appendEntryWait []bool		  // for waiting for append entry to complete before proceeding
 	nextIndex  []int
 	matchIndex []int
 
 	lastIncludedIndex int
 	lastIncludedTerm int 
-
-	outstandingRPC int
 
 	state int      
 
@@ -96,7 +94,7 @@ type Raft struct {
 	
 	snapshotCh chan SnapshotRequest   // for sending new snap shots
 
-	skipSleepCh chan bool
+	skipSleepCh chan bool			// channel to 
 
 	electionTimeoutDur int				// election time out duration  
 
@@ -104,6 +102,7 @@ type Raft struct {
 	
 }
 
+//helper function for KVServer to read raft state size
 func (rf *Raft) RaftStateSize() int {
 
 	return rf.persister.RaftStateSize()
@@ -117,6 +116,7 @@ func (rf *Raft)  ReadSnapshot() []byte{
 
 }
 
+//helper function for KVServer to get last included index
 func (rf *Raft) GetLastIncludedIndex() int{
 
 	rf.mu.Lock()
@@ -190,7 +190,6 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.log = logs
 	rf.lastIncludedIndex = lastIncludedIndex
 	rf.lastIncludedTerm = lastIncludedTerm
-	//rf.commitIndex, rf.lastApplied = rf.lastIncludedIndex, rf.lastIncludedIndex
 
 }
 type LogEntry struct {
@@ -350,14 +349,9 @@ type SnapshotRequest struct {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-	// snapshotReq := SnapshotRequest{
-	// 	Index : index,
-	// 	Snapshot : snapshot,
-	// }
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// send the new snap shot through channel to prevent deadlock here 
-	//rf.snapshotCh <- snapshotReq
+
 	if index <= rf.lastIncludedIndex{
 		return
 	}
@@ -653,6 +647,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me] = index + 1
 		rf.persist()
+
+		//optimize append entries to send append entry request right away
 		go func(){
 			rf.skipSleepCh <- true
 		}()
@@ -1138,11 +1134,13 @@ func (rf *Raft) sendAppendEntries(server int){
 
 
 		rf.mu.Lock()
+		//proceed only when this server is not in the process of appending entry or installing snapshot
 		if rf.installSnapshotWait[server] || rf.appendEntryWait[server]{
 			rf.mu.Unlock()
 			return
 		}
 
+		// mark this server as processing append entry
 		rf.appendEntryWait[server] = true
 		
 		// If last log index ≥ nextIndex for a follower
@@ -1246,11 +1244,13 @@ func (rf *Raft) sendInstallSnapshot(server int){
 
 	rf.mu.Lock()
 
+	//proceed only when this server is not in the process of appending entry or installing snapshot
 	if rf.appendEntryWait[server] || rf.installSnapshotWait[server]{
 		rf.mu.Unlock()
 		return
 	}
 
+	// mark this server as in process of installing snap shot 
 	rf.installSnapshotWait[server] = true
 	
 
@@ -1348,7 +1348,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	go rf.startMainRoutine()
 	go rf.applyCommittedEntries()
-//	go rf.snapshotRoutine() 
 	
 	return rf
 }

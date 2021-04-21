@@ -55,7 +55,7 @@ type KVServer struct {
 
 	lastIncludedIndex int
 
-	killCh chan bool 
+	killCh chan bool // to kill apply chan loop when server gets killed
 
 }
 
@@ -74,7 +74,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives GET[%v] from CLIENT[%v]",kv.me, args.SerialID, args.ClientID)
+
 		kv.mu.Lock()
+		// create a channel to send back the result of this operation after it gets applied
 		c := make(chan OpData, 1)
 		kv.waitingIndex[index] = c
 		kv.mu.Unlock()
@@ -125,6 +127,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if isLeader{
 		DPrintf("KVSERVER[%v] receives %v[%v] from CLIENT[%v]",kv.me, args.Op, args.SerialID, args.ClientID)
 		kv.mu.Lock()
+		// create a channel to send back the result of this operation after it gets applied
 		c := make(chan OpData, 1)
 		kv.waitingIndex[index] = c
 		kv.mu.Unlock()
@@ -224,6 +227,7 @@ func (kv *KVServer) applyChListener(){
 		case applyMsg := <- kv.applyCh:
 			{
 
+				// deal with applied snap shot
 				if applyMsg.SnapshotValid{
 					index := applyMsg.SnapshotIndex
 					data := applyMsg.Snapshot
@@ -281,6 +285,7 @@ func (kv *KVServer) applyChListener(){
 
 }
 
+//start snap shotting when state gets too large 
 func (kv *KVServer) snapshotRoutine(){
 
 	for !kv.killed(){
