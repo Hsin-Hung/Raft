@@ -55,6 +55,8 @@ type KVServer struct {
 
 	lastIncludedIndex int
 
+	killCh chan bool 
+
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -82,23 +84,20 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		case opData := <- c:
 			{
 				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
-
 				reply.Err = opData.ErrResult
 				reply.Value = opData.Value
 				
-				kv.mu.Lock()
-				delete(kv.waitingIndex, index)
-				kv.mu.Unlock()
 
 			}
 		case <- time.After(1000 * time.Millisecond):
 			DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
-			kv.mu.Lock()
-			delete(kv.waitingIndex, index)
-			kv.mu.Unlock()
 			reply.Err = ErrTimeOut
 
 		}
+
+		kv.mu.Lock()
+		delete(kv.waitingIndex, index)
+		kv.mu.Unlock()
 
 
 	}else{
@@ -134,21 +133,17 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 			case opData := <- c:
 				DPrintf("KVSERVER[%v] RECEIVES COMMITTED %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
-
 				reply.Err = opData.ErrResult
-				kv.mu.Lock()
-				delete(kv.waitingIndex, index)
-				kv.mu.Unlock()
 
 			case <- time.After(1000 * time.Millisecond):
 				DPrintf("KVSERVER[%v] TIMEOUT on %v Command[%v] with index[%v]",kv.me, op.OpType, op.SerialID, index)
-				kv.mu.Lock()
-				delete(kv.waitingIndex, index)
-				kv.mu.Unlock()
 				reply.Err = ErrTimeOut
 
 		}
-
+		
+		kv.mu.Lock()
+		delete(kv.waitingIndex, index)
+		kv.mu.Unlock()
 
 	}else{
 
@@ -224,63 +219,76 @@ func (kv *KVServer) applyChListener(){
 	
 	for !kv.killed(){
 		
-		DPrintf("KVSERVER[%v] waiting for APPLY",kv.me)
-		applyMsg := <- kv.applyCh
-		DPrintf("KVSERVER[%v] got APPLY[%v] for index[%v]",kv.me, applyMsg.Command ,applyMsg.CommandIndex)
+		select {
 
-		if applyMsg.SnapshotValid{
+		case applyMsg := <- kv.applyCh:
+			{
 
-			data := applyMsg.Snapshot
-			if applyMsg.SnapshotIndex <=-1 || data == nil || len(data) < 1{ // bootstrap without any state?
-				continue
+				if applyMsg.SnapshotValid{
+					index := applyMsg.SnapshotIndex
+					data := applyMsg.Snapshot
+					storage := make(map[string]string)
+					clientLastCMD := make(map[int64]int64)
+					if !(index <=-1 || data == nil || len(data) < 1){ // bootstrap without any state?
+						r := bytes.NewBuffer(data)
+						d := labgob.NewDecoder(r)
+						if d.Decode(&storage) != nil ||
+						d.Decode(&clientLastCMD) != nil {
+							log.Printf("error decode")
+							return
+						}
+					}
+				
+					kv.mu.Lock()
+					kv.storage = storage
+					kv.clientLastCmd = clientLastCMD
+					kv.lastIncludedIndex = index 
+					kv.mu.Unlock()
+					// kv.readSnapShot()
+					continue 
+				}
+				//ignore all non-valid cmd 
+				if !applyMsg.CommandValid{
+					continue 
+				}
+		
+				op := applyMsg.Command.(Op)
+				_, checkLeader := kv.rf.GetState()
+				
+				kv.mu.Lock()
+				c, ok := kv.waitingIndex[applyMsg.CommandIndex]
+				val, err := kv.executeOp(op)
+				kv.lastIncludedIndex = applyMsg.CommandIndex
+				kv.mu.Unlock()
+		
+				if checkLeader && ok{
+					DPrintf("KVSERVER[%v] sent through WaitingIndex for index[%v]",kv.me ,applyMsg.CommandIndex)
+					c <- OpData{
+						ErrResult: err,
+						Value: val,
+					}
+				}
+
+
 			}
-			r := bytes.NewBuffer(data)
-			d := labgob.NewDecoder(r)
-		
-			storage := make(map[string]string)
-			clientLastCMD := make(map[int64]int64)
-		
-			if d.Decode(&storage) != nil ||
-			d.Decode(&clientLastCMD) != nil {
-				log.Printf("error decode")
-				continue
-			}
-		
-			kv.mu.Lock()
-			kv.storage = storage
-			kv.clientLastCmd = clientLastCMD
-			kv.lastIncludedIndex = applyMsg.SnapshotIndex
-			kv.mu.Unlock()
-			
-			continue 
-		}
-		//ignore all non-valid cmd 
-		if !applyMsg.CommandValid{
-			continue 
+		case <- kv.killCh:
+			return
+
 		}
 
-		op := applyMsg.Command.(Op)
-		_, checkLeader := kv.rf.GetState()
-		
-		kv.mu.Lock()
-		c, ok := kv.waitingIndex[applyMsg.CommandIndex]
-		val, err := kv.executeOp(op)
-		kv.lastIncludedIndex = applyMsg.CommandIndex
-		kv.mu.Unlock()
+
+	}
+
+}
+
+func (kv *KVServer) snapshotRoutine(){
+
+	for !kv.killed(){
+
 		if kv.rf.RaftStateSize() >= kv.maxraftstate && kv.maxraftstate != -1{
 			go kv.saveSnapShot()
 		}
-		
-
-		if checkLeader && ok{
-			c <- OpData{
-				ErrResult: err,
-				Value: val,
-			}
-		}
-
-		DPrintf("KVSERVER[%v] sent through WaitingIndex for index[%v]",kv.me ,applyMsg.CommandIndex)
-
+		time.Sleep(5 * time.Millisecond)
 	}
 
 }
@@ -304,19 +312,17 @@ func (kv *KVServer) saveSnapShot(){
 func (kv *KVServer) readSnapShot(){
 	index := kv.rf.GetLastIncludedIndex()
 	data := kv.rf.ReadSnapshot()
-	if index <=-1 || data == nil || len(data) < 1{ // bootstrap without any state?
-		return
-	}
-	r := bytes.NewBuffer(data)
-	d := labgob.NewDecoder(r)
 
 	storage := make(map[string]string)
 	clientLastCMD := make(map[int64]int64)
-
-	if d.Decode(&storage) != nil ||
-	d.Decode(&clientLastCMD) != nil {
-		log.Printf("error decode")
-		return
+	if !(index <=-1 || data == nil || len(data) < 1){ // bootstrap without any state?
+		r := bytes.NewBuffer(data)
+		d := labgob.NewDecoder(r)
+		if d.Decode(&storage) != nil ||
+		d.Decode(&clientLastCMD) != nil {
+			log.Printf("error decode")
+			return
+		}
 	}
 
 	kv.mu.Lock()
@@ -377,11 +383,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.clientLastCmd = make(map[int64]int64)
 	kv.waitingIndex = make(map[int]chan OpData)
+	kv.killCh = make(chan bool)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	DPrintf("START KVSERVER[%v]",kv.me)
 	kv.readSnapShot()
 	// You may need initialization code here.
 	go kv.applyChListener()
-
+	go kv.snapshotRoutine()
 	return kv
 }
