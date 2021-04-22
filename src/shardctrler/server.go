@@ -14,30 +14,54 @@ type ShardCtrler struct {
 	applyCh chan raft.ApplyMsg
 
 	// Your data here.
+	clientLastCmd map[int64]int64 // this will deal with duplicate command, it stores the most recent cmd for each client 
+	waitingIndex map [int]chan OpData	// this is the channel for sending back cmd execution for each index 
+	storage map [string]string // database for kvserver 
 
+	lastIncludedIndex int
+
+	killCh chan bool // to kill apply chan loop when server gets killed
 	configs []Config // indexed by config num
 }
 
 
 type Op struct {
 	// Your data here.
+	OpType string 
+	Key string
+	Value string 
+	ClientID int64
+	SerialID int64
 }
+type OpData struct{
 
+	ErrResult Err
+	Value string 
+
+}
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
+
+
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
+
+
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
+
+
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
+
+	
 }
 
 
@@ -73,7 +97,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	labgob.Register(Op{})
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
-
+	sc.storage = make(map[string]string)
+	sc.clientLastCmd = make(map[int64]int64)
+	sc.waitingIndex = make(map[int]chan OpData)
+	sc.killCh = make(chan bool)
 	// Your code here.
 
 	return sc
