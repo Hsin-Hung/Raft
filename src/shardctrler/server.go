@@ -64,29 +64,77 @@ type OpData struct{
 	Config      Config
 }
 
-func (sc *ShardCtrler) getSortedGids(incr bool) []int{
+func (sc *ShardCtrler) balanceShards(gids []int, shards [NShards]int, groups map[int][]string, unassigned_shards []int) [NShards]int{
 
-	shrd_dis := sc.shard_dis
+	below_avg := make([]int, 0)
 
-	gids := make([]int, 0, len(shrd_dis))
-	for k := range shrd_dis{
-		gids = append(gids, k)
+	majors := NShards/len(groups) + 1
+	num_majors := NShards % len(groups)
+
+	minors := majors - 1
+	num_minors := len(groups) - num_majors
+	
+	for _, gid := range gids{
+
+		k, v := gid, sc.shard_dis[gid]
+
+		if len(v)==majors && num_majors>0{
+			num_majors--
+		}else if len(v)==minors && num_minors>0{
+			num_minors--
+		}else if len(v) > majors && num_majors>0{		
+			sc.shard_dis[k] = v[len(v)-majors:]
+			unassigned_shards = append(unassigned_shards, v[:len(v)-majors]...)
+			num_majors--
+		}else if len(v) > minors && num_minors>0{
+			sc.shard_dis[k] = v[len(v)-minors:]
+			unassigned_shards = append(unassigned_shards, v[:len(v)-minors]...)
+			num_minors--
+		}else if len(v) < minors {
+			below_avg = append(below_avg, k)
+		}
+
 	}
 
-	if incr{
-	sort.Slice(gids, func(i, j int) bool {
-		return len(shrd_dis[gids[i]]) < len(shrd_dis[gids[j]])
-	})
+	for _, v := range below_avg{
 
-	}else{
-		sort.Slice(gids, func(i, j int) bool {
-			return len(shrd_dis[gids[i]]) > len(shrd_dis[gids[j]])
-		})
+		num_shards := len(sc.shard_dis[v])
+
+		if num_majors>0{
+
+			for i:=0; i < majors-num_shards;i++{
+
+				s := unassigned_shards[0]
+				unassigned_shards =  unassigned_shards[1:]
+				sc.shard_dis[v] = append(sc.shard_dis[v], s)
+				shards[s] = v 
+
+			}
+
+			num_majors--
+
+		}else if num_minors>0{
+
+			for i:=0; i < minors-num_shards;i++{
+
+				s := unassigned_shards[0]
+				unassigned_shards =  unassigned_shards[1:]
+				sc.shard_dis[v] = append(sc.shard_dis[v], s)
+				shards[s] = v 
+
+			}
+
+			num_minors--
+
+		}
+
 
 	}
 
+	sc.unassigned_shards = unassigned_shards
 
-	return gids
+	return shards
+
 
 }
 
@@ -122,88 +170,16 @@ func (sc *ShardCtrler) exeJoin(op Op) OpData{
 		}
 		sort.Ints(gids)
 	
-		below_avg := make([]int, 0)
-	
-		majors := NShards/len(currentGruops) + 1
-		num_majors := NShards % len(currentGruops)
-	
-		minors := majors - 1
-		num_minors := len(currentGruops) - num_majors
-		
-		DPrintf("JOIN shard dis[%v]", sc.shard_dis)
-	
-		for _, gid := range gids{
-
-			k, v := gid, sc.shard_dis[gid]
-
-			if len(v)==majors && num_majors>0{
-				num_majors--
-			}else if len(v)==minors && num_minors>0{
-				num_minors--
-			}else if len(v) > majors && num_majors>0{		
-				sc.shard_dis[k] = v[len(v)-majors:]
-				unassigned_shards = append(unassigned_shards, v[:len(v)-majors]...)
-				num_majors--
-			}else if len(v) > minors && num_minors>0{
-				sc.shard_dis[k] = v[len(v)-minors:]
-				unassigned_shards = append(unassigned_shards, v[:len(v)-minors]...)
-				num_minors--
-			}else if len(v) < minors {
-				below_avg = append(below_avg, k)
-			}
-	
-		}
-	
-		DPrintf("JOIN Below Average[%v], majors[%v], num_majors[%v], minors[%v], num_minors[%v]",below_avg, majors, num_majors, minors, num_minors)
-		DPrintf("JOIN unassignedShards[%v]", unassigned_shards)
-	
-		for _, v := range below_avg{
-	
-			num_shards := len(sc.shard_dis[v])
-	
-			if num_majors>0{
-	
-				for i:=0; i < majors-num_shards;i++{
-	
-					s := unassigned_shards[0]
-					unassigned_shards =  unassigned_shards[1:]
-					sc.shard_dis[v] = append(sc.shard_dis[v], s)
-					currentShards[s] = v 
-	
-				}
-	
-				num_majors--
-	
-			}else if num_minors>0{
-	
-				for i:=0; i < minors-num_shards;i++{
-	
-					s := unassigned_shards[0]
-					unassigned_shards =  unassigned_shards[1:]
-					sc.shard_dis[v] = append(sc.shard_dis[v], s)
-					currentShards[s] = v 
-	
-				}
-	
-				num_minors--
-	
-			}
-	
-	
-		}
+		currentShards = sc.balanceShards(gids, currentShards, currentGruops, unassigned_shards)
 	
 		newConfig := Config{
 			Num: len(sc.configs),
 			Shards: currentShards,
 			Groups: currentGruops,
 		}
-	
-		sc.unassigned_shards = unassigned_shards
-	
+		
 		sc.configs = append(sc.configs, newConfig)
 	
-		DPrintf("JOIN Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
-
 	}
 
 	return opData
@@ -226,7 +202,6 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 		currentShards := currentConfig.Shards
 		unassigned_shards := sc.unassigned_shards
 		gids := make([]int,0)
-		//log.Printf("LEAVE START Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
 	
 		for k, v := range currentConfig.Groups{
 			currentGruops[k] = v
@@ -264,73 +239,7 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 			return opData
 	
 		}
-	
-		below_avg := make([]int, 0)
-	
-		majors := NShards/len(currentGruops) + 1
-		num_majors := NShards % len(currentGruops)
-	
-		minors := majors - 1
-		num_minors := len(currentGruops) - num_majors
-	
-		//log.Printf("LEAVE shard dis[%v]", sc.shard_dis)
-	
-		for _, gid := range gids{
-			k, v := gid, sc.shard_dis[gid]
-			if len(v)==majors && num_majors>0{
-				num_majors--
-			}else if len(v)==minors && num_minors>0{
-				num_minors--
-			}else if len(v) > majors && num_majors>0{		
-				sc.shard_dis[k] = v[len(v)-majors:]
-				unassigned_shards = append(unassigned_shards, v[:len(v)-majors]...)
-				num_majors--
-			}else if len(v) > minors && num_minors>0{
-				sc.shard_dis[k] = v[len(v)-minors:]
-				unassigned_shards = append(unassigned_shards, v[:len(v)-minors]...)
-				num_minors--
-			}else if len(v) < minors {
-				below_avg = append(below_avg, k)
-			}
-	
-		}
-	
-		//log.Printf("LEAVE Below Average[%v], majors[%v], num_majors[%v], minors[%v], num_minors[%v]",below_avg, majors, num_majors, minors, num_minors)
-		//log.Printf("LEAVE unassignedShards[%v]", unassigned_shards)
-	
-			for _, v := range below_avg{
-	
-				num_shards := len(sc.shard_dis[v])
-	
-			if num_majors>0{
-	
-				for i:=0; i < majors-num_shards;i++{
-	
-					s := unassigned_shards[0]
-					unassigned_shards =  unassigned_shards[1:]
-					sc.shard_dis[v] = append(sc.shard_dis[v], s)
-					currentShards[s] = v 
-	
-				}
-	
-				num_majors--
-	
-			}else if num_minors>0{
-	
-				for i:=0; i < minors-num_shards;i++{
-	
-					s := unassigned_shards[0]
-					unassigned_shards =  unassigned_shards[1:]
-					sc.shard_dis[v] = append(sc.shard_dis[v], s)
-					currentShards[s] = v 
-	
-				}
-	
-				num_minors--
-	
-			}
-	
-		}
+		currentShards = sc.balanceShards(gids, currentShards, currentGruops, unassigned_shards)
 	
 		newConfig := Config{
 			Num: len(sc.configs),
@@ -338,10 +247,7 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 			Groups: currentGruops,
 		}
 	
-		sc.unassigned_shards = unassigned_shards
-	
 		sc.configs = append(sc.configs, newConfig)
-		//log.Printf("LEAVE FINISHED Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
 
 	}
 	return opData
