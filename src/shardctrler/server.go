@@ -9,7 +9,6 @@ import (
 	"6.824/labgob"
 	"log"
 	"time"
-	"bytes"
 )
 
 const Debug = true
@@ -33,7 +32,7 @@ type ShardCtrler struct {
 	unassigned_shards []int
 
 	clientLastCmd map[int64]int64 // this will deal with duplicate command, it stores the most recent cmd for each client 
-	waitingIndex map [int]chan Op	// this is the channel for sending back cmd execution for each index 
+	waitingIndex map [int]chan OpData	// this is the channel for sending back cmd execution for each index 
 
 	lastIncludedIndex int
 }
@@ -57,11 +56,12 @@ type Op struct {
 	ClientID int64
 	SerialID int64
 }
+
 type OpData struct{
 
 	ErrResult Err
 	Value string 
-
+	Config      Config
 }
 
 func (sc *ShardCtrler) getSortedGids(incr bool) []int{
@@ -90,62 +90,9 @@ func (sc *ShardCtrler) getSortedGids(incr bool) []int{
 
 }
 
-
-// type Config struct {
-// 	Num    int              // config number
-// 	Shards [NShards]int     // shard -> gid
-// 	Groups map[int][]string // gid -> servers[]
-// }
-
-func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
-	// Your code here. Servers map[int][]string // new GID -> servers mappings
-
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
-	op := Op{
-
-		OpType: Join,
-		Servers: args.Servers,
-		ClientID: args.ClientID,
-		SerialID: args.SerialID,
-
-	}
+func (sc *ShardCtrler) exeJoin(op Op){
 
 
-	index, _, isLeader := sc.rf.Start(op)
-
-
-	if isLeader{
-
-		c := make(chan Op, 1)
-		sc.waitingIndex[index] = c
-
-		select {
-
-		case opData := <- c:
-			{
-
-				log.Printf("%v", opData)
-
-			}
-		case <- time.After(1000 * time.Millisecond):
-
-		}
-
-
-		delete(sc.waitingIndex, index)
-
-
-	}else{
-
-		reply.WrongLeader = true
-
-	}
-
-
-
-	reply.WrongLeader = false
 	currentConfig := sc.configs[len(sc.configs)-1]
 	currentGruops := make(map[int][]string)
 	currentShards := currentConfig.Shards
@@ -155,7 +102,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 		currentGruops[k] = v
 	}
 
-	for k, v := range args.Servers{
+	for k, v := range op.Servers{
 		currentGruops[k] = v
 		sc.shard_dis[k] = make([]int,0)
 	}
@@ -242,60 +189,8 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 }
 
-func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
-	// Your code here. GIDs []int
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
+func (sc *ShardCtrler) exeLeave(op Op){
 
-
-	op := Op{
-
-		OpType: Leave,
-		Gids: args.GIDs,
-		ClientID: args.ClientID,
-		SerialID: args.SerialID,
-
-	}
-
-
-	index, _, isLeader := sc.rf.Start(op)
-
-
-	if isLeader{
-
-		c := make(chan Op, 1)
-		sc.waitingIndex[index] = c
-
-
-		select {
-
-		case opData := <- c:
-			{
-
-				log.Printf("%v", opData)
-
-			}
-		case <- time.After(1000 * time.Millisecond):
-
-		}
-
-
-		delete(sc.waitingIndex, index)
-
-
-
-
-
-
-	}else{
-
-		reply.WrongLeader = true
-
-	}
-
-
-
-	reply.WrongLeader = false
 	currentConfig := sc.configs[len(sc.configs)-1]
 	currentGruops := make(map[int][]string)
 	currentShards := currentConfig.Shards
@@ -307,7 +202,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 		currentGruops[k] = v
 	}
 
-	for _, gid := range args.GIDs{
+	for _, gid := range op.Gids{
 
 		delete(currentGruops, gid)
 
@@ -414,6 +309,160 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 	sc.configs = append(sc.configs, newConfig)
 	DPrintf("LEAVE FINISHED Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
+
+}
+func (sc *ShardCtrler) exeMove(op Op){
+
+
+	currentConfig := sc.configs[len(sc.configs)-1]
+	currentGruops := make(map[int][]string)
+	currentShards := currentConfig.Shards
+
+	for k, v := range currentConfig.Groups{
+		currentGruops[k] = v
+	}
+	original_gid := currentShards[op.Shard]
+
+	for i, v := range sc.shard_dis[original_gid]{
+
+		if v == op.Shard{
+
+			sc.shard_dis[original_gid] = append(sc.shard_dis[original_gid][:i], sc.shard_dis[original_gid][i+1:]...)
+			break
+
+		}
+
+	}
+
+	currentShards[op.Shard] = op.Gid
+
+	newConfig := Config{
+		Num: len(sc.configs),
+		Shards: currentShards,
+		Groups: currentGruops,
+	}
+
+	sc.configs = append(sc.configs, newConfig)
+	
+}
+func (sc *ShardCtrler) exeQuery(op Op) OpData{
+
+	opData := OpData{}
+
+	DPrintf("QUERY args[%v] of config[%v]", op.Num, sc.configs)
+
+	if op.Num == -1 || op.Num >= len(sc.configs){
+
+		opData.Config = sc.configs[len(sc.configs)-1]
+
+	}else{
+
+		opData.Config = sc.configs[op.Num]
+
+	}
+
+
+	return opData
+}
+
+// type Config struct {
+// 	Num    int              // config number
+// 	Shards [NShards]int     // shard -> gid
+// 	Groups map[int][]string // gid -> servers[]
+// }
+
+func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
+	// Your code here. Servers map[int][]string // new GID -> servers mappings
+
+
+	op := Op{
+
+		OpType: Join,
+		Servers: args.Servers,
+		ClientID: args.ClientID,
+		SerialID: args.SerialID,
+
+	}
+
+
+	index, _, isLeader := sc.rf.Start(op)
+
+
+	if isLeader{
+
+		sc.mu.Lock()
+		c := make(chan OpData, 1)
+		sc.waitingIndex[index] = c
+		sc.mu.Unlock()
+
+		select {
+
+		case opData := <- c:
+			{
+
+				log.Printf("%v", opData)
+
+			}
+		case <- time.After(1000 * time.Millisecond):
+
+		}
+
+
+		delete(sc.waitingIndex, index)
+
+
+	}else{
+
+		reply.WrongLeader = true
+
+	}
+
+}
+
+func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
+	// Your code here. GIDs []int
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+
+	op := Op{
+
+		OpType: Leave,
+		Gids: args.GIDs,
+		ClientID: args.ClientID,
+		SerialID: args.SerialID,
+
+	}
+
+
+	index, _, isLeader := sc.rf.Start(op)
+
+
+	if isLeader{
+
+		c := make(chan OpData, 1)
+		sc.waitingIndex[index] = c
+
+
+		select {
+
+		case opData := <- c:
+			{
+
+				log.Printf("%v", opData)
+
+			}
+		case <- time.After(1000 * time.Millisecond):
+
+		}
+
+		delete(sc.waitingIndex, index)
+
+	}else{
+
+		reply.WrongLeader = true
+
+	}
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
@@ -437,7 +486,7 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 	if isLeader{
 
-		c := make(chan Op, 1)
+		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
 
 		select {
@@ -452,54 +501,13 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 		}
 
-
 		delete(sc.waitingIndex, index)
-
-
-
-
-
-
 
 	}else{
 
 		reply.WrongLeader = true
 
 	}
-
-
-
-	reply.WrongLeader = false
-	currentConfig := sc.configs[len(sc.configs)-1]
-	currentGruops := make(map[int][]string)
-	currentShards := currentConfig.Shards
-
-	for k, v := range currentConfig.Groups{
-		currentGruops[k] = v
-	}
-	original_gid := currentShards[args.Shard]
-
-	for i, v := range sc.shard_dis[original_gid]{
-
-		if v == args.Shard{
-
-			sc.shard_dis[original_gid] = append(sc.shard_dis[original_gid][:i], sc.shard_dis[original_gid][i+1:]...)
-			break
-
-		}
-
-	}
-
-	currentShards[args.Shard] = args.GID
-
-	newConfig := Config{
-		Num: len(sc.configs),
-		Shards: currentShards,
-		Groups: currentGruops,
-	}
-
-	sc.configs = append(sc.configs, newConfig)
-
 
 }
 
@@ -519,7 +527,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 
 	if isLeader{
 
-		c := make(chan Op, 1)
+		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
 
 		select {
@@ -546,30 +554,12 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 
 	}
 
-
-
-
-
-
-	DPrintf("QUERY args[%v] of config[%v]", args.Num, sc.configs)
-	reply.WrongLeader = false
-	if args.Num == -1 || args.Num >= len(sc.configs){
-
-		reply.Config = sc.configs[len(sc.configs)-1]
-
-	}else{
-
-		reply.Config = sc.configs[args.Num]
-
-	}
-
-
 }
 
-func (sc *ShardCtrler) executeOp(op Op){
+func (sc *ShardCtrler) executeOp(op Op) OpData{
 
 
-
+	return OpData{}
 }
 
 //routine to listen for applied cmd from raft 
@@ -579,28 +569,6 @@ func (sc *ShardCtrler) applyChListener(){
 
 		applyMsg := <- sc.applyCh
 
-				// deal with applied snap shot
-				if applyMsg.SnapshotValid{
-					index := applyMsg.SnapshotIndex
-					data := applyMsg.Snapshot
-					storage := make(map[string]string)
-					clientLastCMD := make(map[int64]int64)
-					if !(index <=-1 || data == nil || len(data) < 1){ // bootstrap without any state?
-						r := bytes.NewBuffer(data)
-						d := labgob.NewDecoder(r)
-						if d.Decode(&storage) != nil ||
-						d.Decode(&clientLastCMD) != nil {
-							log.Printf("error decode")
-							return
-						}
-					}
-				
-					sc.clientLastCmd = clientLastCMD
-					sc.lastIncludedIndex = index 
-					// kv.readSnapShot()
-					continue 
-				}
-				//ignore all non-valid cmd 
 				if !applyMsg.CommandValid{
 					continue 
 				}
@@ -608,15 +576,15 @@ func (sc *ShardCtrler) applyChListener(){
 				op := applyMsg.Command.(Op)
 				_, checkLeader := sc.rf.GetState()
 				
-				
+				sc.mu.Lock()
 				c, ok := sc.waitingIndex[applyMsg.CommandIndex]
-				sc.executeOp(op)
+				opData := sc.executeOp(op)
 				sc.lastIncludedIndex = applyMsg.CommandIndex
+				sc.mu.Unlock()
 		
 				if checkLeader && ok{
-					c <- op
+					c <- opData
 				}
-
 
 	}
 
@@ -664,7 +632,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 	// Your code here.
 	sc.clientLastCmd = make(map[int64]int64)
-	sc.waitingIndex = make(map[int]chan Op)
+	sc.waitingIndex = make(map[int]chan OpData)
 	sc.shard_dis = make(map[int][]int)
 	sc.unassigned_shards = make([]int,0)
 	for i := 0; i < NShards; i++{
