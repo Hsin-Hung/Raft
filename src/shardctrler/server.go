@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -90,134 +90,98 @@ func (sc *ShardCtrler) getSortedGids(incr bool) []int{
 
 }
 
-func (sc *ShardCtrler) exeJoin(op Op){
+func (sc *ShardCtrler) exeJoin(op Op) OpData{
 
-
-	currentConfig := sc.configs[len(sc.configs)-1]
-	currentGruops := make(map[int][]string)
-	currentShards := currentConfig.Shards
-	unassigned_shards := sc.unassigned_shards
-
-	for k, v := range currentConfig.Groups{
-		currentGruops[k] = v
+	opData := OpData{
+		ErrResult: ErrWrongLeader,
 	}
 
-	for k, v := range op.Servers{
-		currentGruops[k] = v
-		sc.shard_dis[k] = make([]int,0)
-	}
+	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
+		opData.ErrResult = OK
+		sc.clientLastCmd[op.ClientID] = op.SerialID
 
-	below_avg := make([]int, 0)
-
-	majors := NShards/len(currentGruops) + 1
-	num_majors := NShards % len(currentGruops)
-
-	minors := majors - 1
-	num_minors := len(currentGruops) - num_majors
-
-	DPrintf("JOIN shard dis[%v]", sc.shard_dis)
-
-	for k, v := range sc.shard_dis{
-
-		if len(v)==majors && num_majors>0{
-			num_majors--
-		}else if len(v)==minors && num_minors>0{
-			num_minors--
-		}else if len(v) > majors && num_majors>0{		
-			sc.shard_dis[k] = v[len(v)-majors:]
-			unassigned_shards = append(unassigned_shards, v[:len(v)-majors]...)
-			num_majors--
-		}else if len(v) > minors && num_minors>0{
-			sc.shard_dis[k] = v[len(v)-minors:]
-			unassigned_shards = append(unassigned_shards, v[:len(v)-minors]...)
-			num_minors--
-		}else if len(v) < minors {
-			below_avg = append(below_avg, k)
+		currentConfig := sc.configs[len(sc.configs)-1]
+		currentGruops := make(map[int][]string)
+		currentShards := currentConfig.Shards
+		unassigned_shards := sc.unassigned_shards
+	
+		for k, v := range currentConfig.Groups{
+			currentGruops[k] = v
 		}
-
-	}
-
-	DPrintf("JOIN Below Average[%v], majors[%v], num_majors[%v], minors[%v], num_minors[%v]",below_avg, majors, num_majors, minors, num_minors)
-	DPrintf("JOIN unassignedShards[%v]", unassigned_shards)
-
-	for _, v := range below_avg{
-
-		num_shards := len(sc.shard_dis[v])
-
-		if num_majors>0{
-
-			for i:=0; i < majors-num_shards;i++{
-
-				s := unassigned_shards[0]
-				unassigned_shards =  unassigned_shards[1:]
-				sc.shard_dis[v] = append(sc.shard_dis[v], s)
-				currentShards[s] = v 
-
+	
+		for k, v := range op.Servers{
+			currentGruops[k] = v
+			sc.shard_dis[k] = make([]int,0)
+		}
+	
+		below_avg := make([]int, 0)
+	
+		majors := NShards/len(currentGruops) + 1
+		num_majors := NShards % len(currentGruops)
+	
+		minors := majors - 1
+		num_minors := len(currentGruops) - num_majors
+	
+		DPrintf("JOIN shard dis[%v]", sc.shard_dis)
+	
+		for k, v := range sc.shard_dis{
+	
+			if len(v)==majors && num_majors>0{
+				num_majors--
+			}else if len(v)==minors && num_minors>0{
+				num_minors--
+			}else if len(v) > majors && num_majors>0{		
+				sc.shard_dis[k] = v[len(v)-majors:]
+				unassigned_shards = append(unassigned_shards, v[:len(v)-majors]...)
+				num_majors--
+			}else if len(v) > minors && num_minors>0{
+				sc.shard_dis[k] = v[len(v)-minors:]
+				unassigned_shards = append(unassigned_shards, v[:len(v)-minors]...)
+				num_minors--
+			}else if len(v) < minors {
+				below_avg = append(below_avg, k)
 			}
-
-			num_majors--
-
-		}else if num_minors>0{
-
-			for i:=0; i < minors-num_shards;i++{
-
-				s := unassigned_shards[0]
-				unassigned_shards =  unassigned_shards[1:]
-				sc.shard_dis[v] = append(sc.shard_dis[v], s)
-				currentShards[s] = v 
-
+	
+		}
+	
+		DPrintf("JOIN Below Average[%v], majors[%v], num_majors[%v], minors[%v], num_minors[%v]",below_avg, majors, num_majors, minors, num_minors)
+		DPrintf("JOIN unassignedShards[%v]", unassigned_shards)
+	
+		for _, v := range below_avg{
+	
+			num_shards := len(sc.shard_dis[v])
+	
+			if num_majors>0{
+	
+				for i:=0; i < majors-num_shards;i++{
+	
+					s := unassigned_shards[0]
+					unassigned_shards =  unassigned_shards[1:]
+					sc.shard_dis[v] = append(sc.shard_dis[v], s)
+					currentShards[s] = v 
+	
+				}
+	
+				num_majors--
+	
+			}else if num_minors>0{
+	
+				for i:=0; i < minors-num_shards;i++{
+	
+					s := unassigned_shards[0]
+					unassigned_shards =  unassigned_shards[1:]
+					sc.shard_dis[v] = append(sc.shard_dis[v], s)
+					currentShards[s] = v 
+	
+				}
+	
+				num_minors--
+	
 			}
-
-			num_minors--
-
+	
+	
 		}
-
-
-	}
-
-	newConfig := Config{
-		Num: len(sc.configs),
-		Shards: currentShards,
-		Groups: currentGruops,
-	}
-
-	sc.unassigned_shards = unassigned_shards
-
-	sc.configs = append(sc.configs, newConfig)
-
-	DPrintf("JOIN Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
-
-}
-
-func (sc *ShardCtrler) exeLeave(op Op){
-
-	currentConfig := sc.configs[len(sc.configs)-1]
-	currentGruops := make(map[int][]string)
-	currentShards := currentConfig.Shards
-	unassigned_shards := sc.unassigned_shards
-
-	DPrintf("LEAVE START Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
-
-	for k, v := range currentConfig.Groups{
-		currentGruops[k] = v
-	}
-
-	for _, gid := range op.Gids{
-
-		delete(currentGruops, gid)
-
-		for _, s := range sc.shard_dis[gid]{
-
-			unassigned_shards = append(unassigned_shards, s)
-
-		}
-
-		delete(sc.shard_dis, gid)
-
-	}
-
-	if (len(currentGruops)==0){
-
+	
 		newConfig := Config{
 			Num: len(sc.configs),
 			Shards: currentShards,
@@ -225,94 +189,155 @@ func (sc *ShardCtrler) exeLeave(op Op){
 		}
 	
 		sc.unassigned_shards = unassigned_shards
+	
 		sc.configs = append(sc.configs, newConfig)
-		return
+	
+		DPrintf("JOIN Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
 
 	}
 
-	below_avg := make([]int, 0)
-
-	majors := NShards/len(currentGruops) + 1
-	num_majors := NShards % len(currentGruops)
-
-	minors := majors - 1
-	num_minors := len(currentGruops) - num_majors
-
-	DPrintf("LEAVE shard dis[%v]", sc.shard_dis)
-
-	for k, v := range sc.shard_dis{
-
-		if len(v)==majors && num_majors>0{
-			num_majors--
-		}else if len(v)==minors && num_minors>0{
-			num_minors--
-		}else if len(v) > majors && num_majors>0{		
-			sc.shard_dis[k] = v[len(v)-majors:]
-			unassigned_shards = append(unassigned_shards, v[:len(v)-majors]...)
-			num_majors--
-		}else if len(v) > minors && num_minors>0{
-			sc.shard_dis[k] = v[len(v)-minors:]
-			unassigned_shards = append(unassigned_shards, v[:len(v)-minors]...)
-			num_minors--
-		}else if len(v) < minors {
-			below_avg = append(below_avg, k)
-		}
-
-	}
-
-	DPrintf("LEAVE Below Average[%v], majors[%v], num_majors[%v], minors[%v], num_minors[%v]",below_avg, majors, num_majors, minors, num_minors)
-	DPrintf("LEAVE unassignedShards[%v]", unassigned_shards)
-
-		for _, v := range below_avg{
-
-			num_shards := len(sc.shard_dis[v])
-
-		if num_majors>0{
-
-			for i:=0; i < majors-num_shards;i++{
-
-				s := unassigned_shards[0]
-				unassigned_shards =  unassigned_shards[1:]
-				sc.shard_dis[v] = append(sc.shard_dis[v], s)
-				currentShards[s] = v 
-
-			}
-
-			num_majors--
-
-		}else if num_minors>0{
-
-
-			for i:=0; i < minors-num_shards;i++{
-
-				s := unassigned_shards[0]
-				unassigned_shards =  unassigned_shards[1:]
-				sc.shard_dis[v] = append(sc.shard_dis[v], s)
-				currentShards[s] = v 
-
-			}
-
-			num_minors--
-
-		}
-
-
-	}
-
-	newConfig := Config{
-		Num: len(sc.configs),
-		Shards: currentShards,
-		Groups: currentGruops,
-	}
-
-	sc.unassigned_shards = unassigned_shards
-
-	sc.configs = append(sc.configs, newConfig)
-	DPrintf("LEAVE FINISHED Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
+	return opData
 
 }
-func (sc *ShardCtrler) exeMove(op Op){
 
+func (sc *ShardCtrler) exeLeave(op Op) OpData{
+	opData := OpData{
+		ErrResult: ErrWrongLeader,
+	}
+
+	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
+		opData.ErrResult = OK
+		sc.clientLastCmd[op.ClientID] = op.SerialID
+		currentConfig := sc.configs[len(sc.configs)-1]
+		currentGruops := make(map[int][]string)
+		currentShards := currentConfig.Shards
+		unassigned_shards := sc.unassigned_shards
+	
+		DPrintf("LEAVE START Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
+	
+		for k, v := range currentConfig.Groups{
+			currentGruops[k] = v
+		}
+	
+		for _, gid := range op.Gids{
+	
+			delete(currentGruops, gid)
+	
+			for _, s := range sc.shard_dis[gid]{
+	
+				unassigned_shards = append(unassigned_shards, s)
+	
+			}
+	
+			delete(sc.shard_dis, gid)
+	
+		}
+	
+		if (len(currentGruops)==0){
+	
+			newConfig := Config{
+				Num: len(sc.configs),
+				Shards: currentShards,
+				Groups: currentGruops,
+			}
+		
+			sc.unassigned_shards = unassigned_shards
+			sc.configs = append(sc.configs, newConfig)
+			return opData
+	
+		}
+	
+		below_avg := make([]int, 0)
+	
+		majors := NShards/len(currentGruops) + 1
+		num_majors := NShards % len(currentGruops)
+	
+		minors := majors - 1
+		num_minors := len(currentGruops) - num_majors
+	
+		DPrintf("LEAVE shard dis[%v]", sc.shard_dis)
+	
+		for k, v := range sc.shard_dis{
+	
+			if len(v)==majors && num_majors>0{
+				num_majors--
+			}else if len(v)==minors && num_minors>0{
+				num_minors--
+			}else if len(v) > majors && num_majors>0{		
+				sc.shard_dis[k] = v[len(v)-majors:]
+				unassigned_shards = append(unassigned_shards, v[:len(v)-majors]...)
+				num_majors--
+			}else if len(v) > minors && num_minors>0{
+				sc.shard_dis[k] = v[len(v)-minors:]
+				unassigned_shards = append(unassigned_shards, v[:len(v)-minors]...)
+				num_minors--
+			}else if len(v) < minors {
+				below_avg = append(below_avg, k)
+			}
+	
+		}
+	
+		DPrintf("LEAVE Below Average[%v], majors[%v], num_majors[%v], minors[%v], num_minors[%v]",below_avg, majors, num_majors, minors, num_minors)
+		DPrintf("LEAVE unassignedShards[%v]", unassigned_shards)
+	
+			for _, v := range below_avg{
+	
+				num_shards := len(sc.shard_dis[v])
+	
+			if num_majors>0{
+	
+				for i:=0; i < majors-num_shards;i++{
+	
+					s := unassigned_shards[0]
+					unassigned_shards =  unassigned_shards[1:]
+					sc.shard_dis[v] = append(sc.shard_dis[v], s)
+					currentShards[s] = v 
+	
+				}
+	
+				num_majors--
+	
+			}else if num_minors>0{
+	
+				for i:=0; i < minors-num_shards;i++{
+	
+					s := unassigned_shards[0]
+					unassigned_shards =  unassigned_shards[1:]
+					sc.shard_dis[v] = append(sc.shard_dis[v], s)
+					currentShards[s] = v 
+	
+				}
+	
+				num_minors--
+	
+			}
+	
+		}
+	
+		newConfig := Config{
+			Num: len(sc.configs),
+			Shards: currentShards,
+			Groups: currentGruops,
+		}
+	
+		sc.unassigned_shards = unassigned_shards
+	
+		sc.configs = append(sc.configs, newConfig)
+		DPrintf("LEAVE FINISHED Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
+
+	}
+	return opData
+	
+
+}
+func (sc *ShardCtrler) exeMove(op Op) OpData{
+	opData := OpData{
+		ErrResult: ErrWrongLeader,
+	}
+
+	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
+		opData.ErrResult = OK
+		sc.clientLastCmd[op.ClientID] = op.SerialID
 
 	currentConfig := sc.configs[len(sc.configs)-1]
 	currentGruops := make(map[int][]string)
@@ -343,10 +368,13 @@ func (sc *ShardCtrler) exeMove(op Op){
 	}
 
 	sc.configs = append(sc.configs, newConfig)
+
+}
+
+return opData
 	
 }
 func (sc *ShardCtrler) exeQuery(op Op) OpData{
-
 	opData := OpData{}
 
 	DPrintf("QUERY args[%v] of config[%v]", op.Num, sc.configs)
@@ -399,17 +427,17 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 		case opData := <- c:
 			{
-
-				log.Printf("%v", opData)
+				reply.Err = opData.ErrResult
+				reply.WrongLeader = false
 
 			}
 		case <- time.After(1000 * time.Millisecond):
 
 		}
 
-
+		sc.mu.Lock()
 		delete(sc.waitingIndex, index)
-
+		sc.mu.Unlock()
 
 	}else{
 
@@ -421,9 +449,6 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here. GIDs []int
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
 
 	op := Op{
 
@@ -439,25 +464,24 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 
 	if isLeader{
-
+		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
-
+		sc.mu.Unlock()
 
 		select {
 
 		case opData := <- c:
 			{
-
-				log.Printf("%v", opData)
-
+				reply.Err = opData.ErrResult
+				reply.WrongLeader = false
 			}
 		case <- time.After(1000 * time.Millisecond):
 
 		}
-
+		sc.mu.Lock()
 		delete(sc.waitingIndex, index)
-
+		sc.mu.Unlock()
 	}else{
 
 		reply.WrongLeader = true
@@ -467,8 +491,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
+
 
 	op := Op{
 
@@ -485,24 +508,26 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 
 	if isLeader{
-
+		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
+		sc.mu.Unlock()
 
 		select {
 
 		case opData := <- c:
 			{
 
-				log.Printf("%v", opData)
+				reply.Err = opData.ErrResult
+				reply.WrongLeader = false
 
 			}
 		case <- time.After(1000 * time.Millisecond):
 
 		}
-
+		sc.mu.Lock()
 		delete(sc.waitingIndex, index)
-
+		sc.mu.Unlock()
 	}else{
 
 		reply.WrongLeader = true
@@ -513,11 +538,8 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here. Num int 
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
 	op := Op{
-		OpType: Join,
+		OpType: Query,
 		Num: args.Num,
 		ClientID: args.ClientID,
 		SerialID: args.SerialID,
@@ -526,25 +548,26 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	index, _, isLeader := sc.rf.Start(op)
 
 	if isLeader{
-
+		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
-
+		sc.mu.Unlock()
 		select {
 
 		case opData := <- c:
 			{
 
-				log.Printf("%v", opData)
+				reply.Err = opData.ErrResult
+				reply.Config = opData.Config
+				reply.WrongLeader = false
 
 			}
-		case <- time.After(1000 * time.Millisecond):
-
+		case <- time.After(5000 * time.Millisecond):
 		}
 
-
+		sc.mu.Lock()
 		delete(sc.waitingIndex, index)
-
+		sc.mu.Unlock()
 
 
 
@@ -557,6 +580,22 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 }
 
 func (sc *ShardCtrler) executeOp(op Op) OpData{
+
+
+	switch(op.OpType){
+
+	case Join:
+		return sc.exeJoin(op)
+	case Leave:
+		return sc.exeLeave(op)
+	case Move:
+		return sc.exeMove(op)
+	case Query:
+		return sc.exeQuery(op)
+	default:
+		log.Printf("No such Operation type !")
+
+	}
 
 
 	return OpData{}
@@ -572,7 +611,6 @@ func (sc *ShardCtrler) applyChListener(){
 				if !applyMsg.CommandValid{
 					continue 
 				}
-		
 				op := applyMsg.Command.(Op)
 				_, checkLeader := sc.rf.GetState()
 				
@@ -638,5 +676,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	for i := 0; i < NShards; i++{
 		sc.unassigned_shards = append(sc.unassigned_shards, i)
 	}
+
+	go sc.applyChListener()
 	return sc
 }
