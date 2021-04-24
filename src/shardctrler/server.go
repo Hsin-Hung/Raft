@@ -97,6 +97,8 @@ func (sc *ShardCtrler) exeJoin(op Op) OpData{
 	}
 
 	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
+
+		//log.Printf("JOIN op[%v]    shardDis[%v]", op, sc.shard_dis)
 		opData.ErrResult = OK
 		sc.clientLastCmd[op.ClientID] = op.SerialID
 
@@ -121,7 +123,7 @@ func (sc *ShardCtrler) exeJoin(op Op) OpData{
 	
 		minors := majors - 1
 		num_minors := len(currentGruops) - num_majors
-	
+		
 		DPrintf("JOIN shard dis[%v]", sc.shard_dis)
 	
 		for k, v := range sc.shard_dis{
@@ -192,7 +194,7 @@ func (sc *ShardCtrler) exeJoin(op Op) OpData{
 	
 		sc.configs = append(sc.configs, newConfig)
 	
-		DPrintf("JOIN Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
+		DPrintf("JOIN Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
 
 	}
 
@@ -206,6 +208,9 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 	}
 
 	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
+
+		//log.Printf("%v", op)
+
 		opData.ErrResult = OK
 		sc.clientLastCmd[op.ClientID] = op.SerialID
 		currentConfig := sc.configs[len(sc.configs)-1]
@@ -213,7 +218,7 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 		currentShards := currentConfig.Shards
 		unassigned_shards := sc.unassigned_shards
 	
-		DPrintf("LEAVE START Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
+		//log.Printf("LEAVE START Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
 	
 		for k, v := range currentConfig.Groups{
 			currentGruops[k] = v
@@ -255,7 +260,7 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 		minors := majors - 1
 		num_minors := len(currentGruops) - num_majors
 	
-		DPrintf("LEAVE shard dis[%v]", sc.shard_dis)
+		//log.Printf("LEAVE shard dis[%v]", sc.shard_dis)
 	
 		for k, v := range sc.shard_dis{
 	
@@ -277,8 +282,8 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 	
 		}
 	
-		DPrintf("LEAVE Below Average[%v], majors[%v], num_majors[%v], minors[%v], num_minors[%v]",below_avg, majors, num_majors, minors, num_minors)
-		DPrintf("LEAVE unassignedShards[%v]", unassigned_shards)
+		//log.Printf("LEAVE Below Average[%v], majors[%v], num_majors[%v], minors[%v], num_minors[%v]",below_avg, majors, num_majors, minors, num_minors)
+		//log.Printf("LEAVE unassignedShards[%v]", unassigned_shards)
 	
 			for _, v := range below_avg{
 	
@@ -323,7 +328,7 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 		sc.unassigned_shards = unassigned_shards
 	
 		sc.configs = append(sc.configs, newConfig)
-		DPrintf("LEAVE FINISHED Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
+		//log.Printf("LEAVE FINISHED Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs, sc.shard_dis, sc.unassigned_shards)
 
 	}
 	return opData
@@ -336,6 +341,7 @@ func (sc *ShardCtrler) exeMove(op Op) OpData{
 	}
 
 	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
+		//log.Printf("MOVE op[%v], config[%v], shardDis[%v], unassign[%v]", op, sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
 		opData.ErrResult = OK
 		sc.clientLastCmd[op.ClientID] = op.SerialID
 
@@ -353,6 +359,7 @@ func (sc *ShardCtrler) exeMove(op Op) OpData{
 		if v == op.Shard{
 
 			sc.shard_dis[original_gid] = append(sc.shard_dis[original_gid][:i], sc.shard_dis[original_gid][i+1:]...)
+			sc.shard_dis[op.Gid] = append(sc.shard_dis[op.Gid], op.Shard)
 			break
 
 		}
@@ -368,6 +375,7 @@ func (sc *ShardCtrler) exeMove(op Op) OpData{
 	}
 
 	sc.configs = append(sc.configs, newConfig)
+	//log.Printf("MOVE FINISHED op[%v], config[%v], shardDis[%v], unassign[%v]", op, sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
 
 }
 
@@ -377,18 +385,20 @@ return opData
 func (sc *ShardCtrler) exeQuery(op Op) OpData{
 	opData := OpData{}
 
-	DPrintf("QUERY args[%v] of config[%v]", op.Num, sc.configs)
+	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
+		opData.ErrResult = OK
+		sc.clientLastCmd[op.ClientID] = op.SerialID
+		if op.Num == -1 || op.Num >= len(sc.configs){
 
-	if op.Num == -1 || op.Num >= len(sc.configs){
-
-		opData.Config = sc.configs[len(sc.configs)-1]
-
-	}else{
-
-		opData.Config = sc.configs[op.Num]
+			opData.Config = sc.configs[len(sc.configs)-1]
+	
+		}else{
+	
+			opData.Config = sc.configs[op.Num]
+	
+		}
 
 	}
-
 
 	return opData
 }
@@ -402,7 +412,7 @@ func (sc *ShardCtrler) exeQuery(op Op) OpData{
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here. Servers map[int][]string // new GID -> servers mappings
 
-
+	
 	op := Op{
 
 		OpType: Join,
@@ -417,7 +427,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 
 	if isLeader{
-
+		log.Printf("JOIN")
 		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
@@ -449,7 +459,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here. GIDs []int
-
+	
 	op := Op{
 
 		OpType: Leave,
@@ -464,6 +474,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 
 	if isLeader{
+		log.Printf("LEAVE")
 		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
@@ -492,7 +503,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
 
-
+	
 	op := Op{
 
 		OpType: Move,
@@ -508,6 +519,7 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 
 	if isLeader{
+		log.Printf("MOVE")
 		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
@@ -548,6 +560,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	index, _, isLeader := sc.rf.Start(op)
 
 	if isLeader{
+		log.Printf("QUERY")
 		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
@@ -612,6 +625,8 @@ func (sc *ShardCtrler) applyChListener(){
 					continue 
 				}
 				op := applyMsg.Command.(Op)
+
+				log.Printf("op %v",op)
 				_, checkLeader := sc.rf.GetState()
 				
 				sc.mu.Lock()
@@ -676,7 +691,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	for i := 0; i < NShards; i++{
 		sc.unassigned_shards = append(sc.unassigned_shards, i)
 	}
-
 	go sc.applyChListener()
 	return sc
 }
