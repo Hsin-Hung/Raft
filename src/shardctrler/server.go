@@ -106,7 +106,8 @@ func (sc *ShardCtrler) exeJoin(op Op) OpData{
 		currentGruops := make(map[int][]string)
 		currentShards := currentConfig.Shards
 		unassigned_shards := sc.unassigned_shards
-	
+		gids := make([]int,0)
+
 		for k, v := range currentConfig.Groups{
 			currentGruops[k] = v
 		}
@@ -115,6 +116,11 @@ func (sc *ShardCtrler) exeJoin(op Op) OpData{
 			currentGruops[k] = v
 			sc.shard_dis[k] = make([]int,0)
 		}
+
+		for k, _ := range currentGruops{
+			gids = append(gids, k)
+		}
+		sort.Ints(gids)
 	
 		below_avg := make([]int, 0)
 	
@@ -126,8 +132,10 @@ func (sc *ShardCtrler) exeJoin(op Op) OpData{
 		
 		DPrintf("JOIN shard dis[%v]", sc.shard_dis)
 	
-		for k, v := range sc.shard_dis{
-	
+		for _, gid := range gids{
+
+			k, v := gid, sc.shard_dis[gid]
+
 			if len(v)==majors && num_majors>0{
 				num_majors--
 			}else if len(v)==minors && num_minors>0{
@@ -217,7 +225,7 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 		currentGruops := make(map[int][]string)
 		currentShards := currentConfig.Shards
 		unassigned_shards := sc.unassigned_shards
-	
+		gids := make([]int,0)
 		//log.Printf("LEAVE START Config[%v], Shrd_Dis[%v], UnassignedShrd[%v]", sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
 	
 		for k, v := range currentConfig.Groups{
@@ -237,6 +245,11 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 			delete(sc.shard_dis, gid)
 	
 		}
+
+		for k, _ := range currentGruops{
+			gids = append(gids, k)
+		}
+		sort.Ints(gids)
 	
 		if (len(currentGruops)==0){
 	
@@ -262,8 +275,8 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 	
 		//log.Printf("LEAVE shard dis[%v]", sc.shard_dis)
 	
-		for k, v := range sc.shard_dis{
-	
+		for _, gid := range gids{
+			k, v := gid, sc.shard_dis[gid]
 			if len(v)==majors && num_majors>0{
 				num_majors--
 			}else if len(v)==minors && num_minors>0{
@@ -427,7 +440,6 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 
 	if isLeader{
-		log.Printf("JOIN")
 		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
@@ -474,7 +486,6 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 
 	if isLeader{
-		log.Printf("LEAVE")
 		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
@@ -519,7 +530,6 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 
 	if isLeader{
-		log.Printf("MOVE")
 		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
@@ -560,7 +570,6 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	index, _, isLeader := sc.rf.Start(op)
 
 	if isLeader{
-		log.Printf("QUERY")
 		sc.mu.Lock()
 		c := make(chan OpData, 1)
 		sc.waitingIndex[index] = c
@@ -626,7 +635,6 @@ func (sc *ShardCtrler) applyChListener(){
 				}
 				op := applyMsg.Command.(Op)
 
-				log.Printf("op %v",op)
 				_, checkLeader := sc.rf.GetState()
 				
 				sc.mu.Lock()
