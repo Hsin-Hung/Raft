@@ -28,8 +28,8 @@ type ShardCtrler struct {
 
 	// Your data here.
 	configs []Config // indexed by config num
-	shard_dis map[int][]int // GID -> Shards
-	unassigned_shards []int
+	shard_dis map[int][]int // GID -> []Shards
+	unassigned_shards []int // shards that are not assigned to any GID
 
 	clientLastCmd map[int64]int64 // this will deal with duplicate command, it stores the most recent cmd for each client 
 	waitingIndex map [int]chan OpData	// this is the channel for sending back cmd execution for each index 
@@ -48,11 +48,11 @@ const (
 type Op struct {
 	// Your data here.
 	OpType int 
-	Servers map[int][]string
-	Gids []int
-	Shard int
-	Gid int
-	Num int
+	Servers map[int][]string // for join
+	Gids []int // for leave
+	Shard int // for move
+	Gid int // for move
+	Num int // for query 
 	ClientID int64
 	SerialID int64
 }
@@ -66,39 +66,40 @@ type OpData struct{
 
 func (sc *ShardCtrler) balanceShards(gids []int, shards [NShards]int, groups map[int][]string, unassigned_shards []int) [NShards]int{
 
-	below_avg := make([]int, 0)
+	below_avg := make([]int, 0) // gids that are below the average shards, which means they need to be assign more shards 
 
-	majors := NShards/len(groups) + 1
-	num_majors := NShards % len(groups)
+	majors := NShards/len(groups) + 1 // majority of gids need this many shards 
+	num_majors := NShards % len(groups) // num of gids that need 'majors' shards
 
-	minors := majors - 1
-	num_minors := len(groups) - num_majors
+	minors := majors - 1 // the rest of gids need this many shards 
+	num_minors := len(groups) - num_majors // num of gids that need 'minors' shards
 	
 	for _, gid := range gids{
 
-		k, v := gid, sc.shard_dis[gid]
+		v := sc.shard_dis[gid]
 
 		if len(v)==majors && num_majors>0{
 			num_majors--
 		}else if len(v)==minors && num_minors>0{
 			num_minors--
 		}else if len(v) > majors && num_majors>0{		
-			sc.shard_dis[k] = v[len(v)-majors:]
+			sc.shard_dis[gid] = v[len(v)-majors:]
 			unassigned_shards = append(unassigned_shards, v[:len(v)-majors]...)
 			num_majors--
 		}else if len(v) > minors && num_minors>0{
-			sc.shard_dis[k] = v[len(v)-minors:]
+			sc.shard_dis[gid] = v[len(v)-minors:]
 			unassigned_shards = append(unassigned_shards, v[:len(v)-minors]...)
 			num_minors--
 		}else if len(v) < minors {
-			below_avg = append(below_avg, k)
+			below_avg = append(below_avg, gid)
 		}
 
 	}
 
-	for _, v := range below_avg{
+	//go through all gids that need re-distribution 
+	for _, gid := range below_avg{
 
-		num_shards := len(sc.shard_dis[v])
+		num_shards := len(sc.shard_dis[gid])
 
 		if num_majors>0{
 
@@ -106,8 +107,8 @@ func (sc *ShardCtrler) balanceShards(gids []int, shards [NShards]int, groups map
 
 				s := unassigned_shards[0]
 				unassigned_shards =  unassigned_shards[1:]
-				sc.shard_dis[v] = append(sc.shard_dis[v], s)
-				shards[s] = v 
+				sc.shard_dis[gid] = append(sc.shard_dis[gid], s)
+				shards[s] = gid 
 
 			}
 
@@ -119,8 +120,8 @@ func (sc *ShardCtrler) balanceShards(gids []int, shards [NShards]int, groups map
 
 				s := unassigned_shards[0]
 				unassigned_shards =  unassigned_shards[1:]
-				sc.shard_dis[v] = append(sc.shard_dis[v], s)
-				shards[s] = v 
+				sc.shard_dis[gid] = append(sc.shard_dis[gid	], s)
+				shards[s] = gid 
 
 			}
 
@@ -138,15 +139,16 @@ func (sc *ShardCtrler) balanceShards(gids []int, shards [NShards]int, groups map
 
 }
 
+// execute join logics 
 func (sc *ShardCtrler) exeJoin(op Op) OpData{
 
 	opData := OpData{
 		ErrResult: ErrWrongLeader,
 	}
 
+	// detect duplicate command
 	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
 
-		//log.Printf("JOIN op[%v]    shardDis[%v]", op, sc.shard_dis)
 		opData.ErrResult = OK
 		sc.clientLastCmd[op.ClientID] = op.SerialID
 
@@ -186,14 +188,13 @@ func (sc *ShardCtrler) exeJoin(op Op) OpData{
 
 }
 
+// execute leave logics 
 func (sc *ShardCtrler) exeLeave(op Op) OpData{
 	opData := OpData{
 		ErrResult: ErrWrongLeader,
 	}
 
 	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
-
-		//log.Printf("%v", op)
 
 		opData.ErrResult = OK
 		sc.clientLastCmd[op.ClientID] = op.SerialID
@@ -254,13 +255,14 @@ func (sc *ShardCtrler) exeLeave(op Op) OpData{
 	
 
 }
+
+//execute move logic
 func (sc *ShardCtrler) exeMove(op Op) OpData{
 	opData := OpData{
 		ErrResult: ErrWrongLeader,
 	}
 
 	if sid, ok := sc.clientLastCmd[op.ClientID]; !ok || (ok && op.SerialID > sid){
-		//log.Printf("MOVE op[%v], config[%v], shardDis[%v], unassign[%v]", op, sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
 		opData.ErrResult = OK
 		sc.clientLastCmd[op.ClientID] = op.SerialID
 
@@ -271,14 +273,14 @@ func (sc *ShardCtrler) exeMove(op Op) OpData{
 	for k, v := range currentConfig.Groups{
 		currentGruops[k] = v
 	}
-	original_gid := currentShards[op.Shard]
 
+	original_gid := currentShards[op.Shard]
+	sc.shard_dis[op.Gid] = append(sc.shard_dis[op.Gid], op.Shard)
 	for i, v := range sc.shard_dis[original_gid]{
 
 		if v == op.Shard{
-
+			// remove the shard from this original gid's shard distribution 
 			sc.shard_dis[original_gid] = append(sc.shard_dis[original_gid][:i], sc.shard_dis[original_gid][i+1:]...)
-			sc.shard_dis[op.Gid] = append(sc.shard_dis[op.Gid], op.Shard)
 			break
 
 		}
@@ -294,13 +296,14 @@ func (sc *ShardCtrler) exeMove(op Op) OpData{
 	}
 
 	sc.configs = append(sc.configs, newConfig)
-	//log.Printf("MOVE FINISHED op[%v], config[%v], shardDis[%v], unassign[%v]", op, sc.configs[len(sc.configs)-1], sc.shard_dis, sc.unassigned_shards)
 
 }
 
 return opData
 	
 }
+
+//execute query logic
 func (sc *ShardCtrler) exeQuery(op Op) OpData{
 	opData := OpData{}
 
@@ -322,15 +325,7 @@ func (sc *ShardCtrler) exeQuery(op Op) OpData{
 	return opData
 }
 
-// type Config struct {
-// 	Num    int              // config number
-// 	Shards [NShards]int     // shard -> gid
-// 	Groups map[int][]string // gid -> servers[]
-// }
-
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
-	// Your code here. Servers map[int][]string // new GID -> servers mappings
-
 	
 	op := Op{
 
@@ -360,7 +355,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 			}
 		case <- time.After(1000 * time.Millisecond):
-
+			reply.WrongLeader = true
 		}
 
 		sc.mu.Lock()
@@ -405,7 +400,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 				reply.WrongLeader = false
 			}
 		case <- time.After(1000 * time.Millisecond):
-
+			reply.WrongLeader = true
 		}
 		sc.mu.Lock()
 		delete(sc.waitingIndex, index)
@@ -451,7 +446,7 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 			}
 		case <- time.After(1000 * time.Millisecond):
-
+			reply.WrongLeader = true
 		}
 		sc.mu.Lock()
 		delete(sc.waitingIndex, index)
@@ -490,7 +485,8 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 				reply.WrongLeader = false
 
 			}
-		case <- time.After(5000 * time.Millisecond):
+		case <- time.After(1000 * time.Millisecond):
+			reply.WrongLeader = true
 		}
 
 		sc.mu.Lock()
