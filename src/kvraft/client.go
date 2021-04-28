@@ -1,12 +1,20 @@
 package kvraft
 
-import "6.824/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"6.824/labrpc"
+	"crypto/rand"
+	"math/big"
+	"sync/atomic"
+)
+//import "log"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+
+	currentLeader int 
+	clientID int64
+	serialID int64
 }
 
 func nrand() int64 {
@@ -19,6 +27,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.clientID = nrand()
 	// You'll have to add code here.
 	return ck
 }
@@ -38,6 +47,41 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
+	args := GetArgs{
+		Key : key,
+		ClientID : ck.clientID,
+		SerialID : atomic.AddInt64(&ck.serialID,1),
+	}
+	
+
+	DPrintf("CLIENT[%v] -> Get[%v] -> KVSERVER", ck.clientID, args.SerialID)
+
+	for i := 0; ;i++{
+		reply := GetReply{}
+		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &args, &reply)
+
+		if ok{
+
+			if reply.Err == OK{
+				//log.Printf("KV server response: OK")
+				return reply.Value
+
+			}else if reply.Err == ErrWrongLeader{
+				//log.Printf("KV server response: Wrong Leader Error")
+ 
+			}else if reply.Err == ErrTimeOut{
+				//log.Printf("KV server[%v] response: Timeout Error",ck.currentLeader)
+				
+			}else{
+				//log.Printf("KV server response: Key Error")
+				break
+			}
+			
+		}
+		ck.currentLeader++
+		ck.currentLeader %= len(ck.servers)
+	}
+
 	return ""
 }
 
@@ -53,6 +97,43 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+
+	args := PutAppendArgs{
+		Key : key,
+		Value: value,
+		Op: op,
+		ClientID : ck.clientID,
+		SerialID : atomic.AddInt64(&ck.serialID,1),
+	}
+	
+
+	DPrintf("CLIENT[%v] -> PutAppend[%v] -> KVSERVER", ck.clientID, args.SerialID)
+	for i := 0; ;i++{
+		reply := PutAppendReply{}
+		ok := ck.servers[ck.currentLeader].Call("KVServer.PutAppend", &args, &reply)
+
+		if ok{
+
+			if reply.Err == OK{
+			//	log.Printf("KV server response: OK")
+				return 
+			}else if reply.Err == ErrWrongLeader{
+				//log.Printf("KV server response: Wrong Leader Error")
+
+			}else if reply.Err == ErrTimeOut{
+				//log.Printf("KV server[%v] response: Timeout Error",ck.currentLeader)
+				
+			}else{
+				//log.Printf("KV server response: Key Error")
+				break
+			} 
+
+		}
+		ck.currentLeader++
+		ck.currentLeader %= len(ck.servers)
+
+	}
+
 }
 
 func (ck *Clerk) Put(key string, value string) {
